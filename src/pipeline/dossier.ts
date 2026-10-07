@@ -50,7 +50,7 @@ export const dossierSchema = z.object({
         quote: z.string().min(15).max(300),
       }),
     )
-    .max(20),
+    .max(12),
   scores: z.object({
     pain: criterion,
     frequency: criterion,

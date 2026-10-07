@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Db } from "../db/pool.ts";
 import { requestApproval } from "../domain/approvals.ts";
-import { getProject, saveArtifact, transition, type Project } from "../domain/projects.ts";
+import { getProject, latestArtifact, saveArtifact, transition, type Project } from "../domain/projects.ts";
 import { extractJson, type FetchedSource, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
 import { decide, dossierSchema, redTeamSchema, renderDossier, verifyDossier, type DossierDraft, type RedTeam } from "./dossier.ts";
@@ -27,6 +27,7 @@ const SYNTHESIS_SYSTEM = `Tu rédiges le dossier d'opportunité d'une usine à S
 Tu ne peux citer QUE les URL de la liste « Pages ouvertes » fournie. Toute autre URL sera supprimée automatiquement, et un critère sans source ouverte verra sa note plafonnée à 2/5.
 Chaque affirmation porte une "quote" : un extrait recopié MOT POUR MOT des notes de recherche (entre guillemets dans les notes). Le code vérifie que cet extrait figure dans la page ; sinon l'affirmation est supprimée. Ne reformule jamais une citation.
 N'invente aucun chiffre. Si une information manque, dis-le.
+Sois concis : 12 preuves au maximum, 5 concurrents au maximum, justifications de 2 phrases.
 ${GOLDEN_PATH}
 Réponds uniquement par un objet JSON dans un bloc \`\`\`json, sans autre texte.`;
 
@@ -62,37 +63,38 @@ async function structuredCall<T>(
 ): Promise<T> {
   let prompt = params.prompt;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const res = await deps.llm.call({ ...params, prompt, tier: "strong", promptVersion: PROMPT_VERSION });
-    try {
-      return schema.parse(extractJson(res.text));
-    } catch (error) {
-      if (attempt === 2) throw new Error(`Réponse invalide de ${params.agent} après 2 essais : ${error instanceof Error ? error.message.slice(0, 500) : error}`);
-      const detail = error instanceof z.ZodError ? z.prettifyError(error) : String(error);
-      prompt = `${params.prompt}\n\nTa réponse précédente était invalide :\n${detail.slice(0, 1500)}\nCorrige et renvoie uniquement le JSON complet.`;
+    const res = await deps.llm.call({ ...params, prompt, tier: "strong", promptVersion: PROMPT_VERSION, acceptTruncated: true });
+    let problem: string;
+    if (res.truncated) {
+      problem = "Ta réponse précédente était trop longue et a été coupée. Sois plus concis : 10 preuves au maximum, justifications de 2 phrases au maximum.";
+    } else {
+      try {
+        return schema.parse(extractJson(res.text));
+      } catch (error) {
+        const detail = error instanceof z.ZodError ? z.prettifyError(error) : String(error);
+        problem = `Ta réponse précédente était invalide :\n${detail.slice(0, 1500)}`;
+      }
     }
+    if (attempt === 2) throw new Error(`Réponse invalide de ${params.agent} après 2 essais : ${problem.slice(0, 400)}`);
+    prompt = `${params.prompt}\n\n${problem}\nRenvoie uniquement le JSON complet.`;
   }
   throw new Error("inaccessible");
 }
 
-/**
- * Étape 1a : recherche sourcée → synthèse → vérification des sources (code) → Red Team → décision (code).
- * Termine en AWAITING_P1 (avec demande de validation Telegram) ou en ARCHIVED (avec la raison).
- */
-export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Promise<"AWAITING_P1" | "ARCHIVED"> {
-  const { db, llm, notifier } = deps;
-  let project = await getProject(db, projectId);
-  if (!project) throw new Error(`Projet ${projectId} introuvable`);
-  if (project.state === "IDEA") {
-    await transition(db, projectId, "IDEA", "RESEARCHING", "system", "recherche lancée");
-    await notifier.send(`🔎 Recherche lancée pour « ${project.title} ». Je reviens avec un dossier sourcé (environ 10 à 20 min).`);
-    project = { ...project, state: "RESEARCHING" };
+async function researchOnce(deps: DiscoveryDeps, project: Project): Promise<{ notes: string; fetched: FetchedSource[] }> {
+  const { db, llm } = deps;
+  const cached = await latestArtifact(db, project.id, "research");
+  if (cached) {
+    const { rows } = await db.query<{ url: string; title: string | null; content: string | null }>(
+      "select url, title, content from sources where project_id = $1 order by id",
+      [project.id],
+    );
+    return { notes: cached.markdown, fetched: rows.map((r) => ({ url: r.url, title: r.title, text: r.content })) };
   }
-  if (project.state !== "RESEARCHING") throw new Error(`Projet dans l'état ${project.state}, recherche impossible`);
 
-  // 1. Recherche avec ouverture réelle des pages.
   const research = await llm.call({
     agent: "research",
-    projectId,
+    projectId: project.id,
     tier: "standard",
     promptVersion: PROMPT_VERSION,
     system: RESEARCH_SYSTEM,
@@ -102,16 +104,36 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
     research: { maxSearches: 8, maxFetches: 10 },
     reserveUsd: 3,
   });
-  const fetched: FetchedSource[] = research.fetched;
   if (research.truncated && research.text.length < 1500) {
     throw new Error("Notes de recherche coupées trop tôt pour être exploitables.");
   }
-  for (const s of fetched) {
+  for (const s of research.fetched) {
     await db.query(
       "insert into sources (project_id, url, title, content) values ($1, $2, $3, $4) on conflict (project_id, url) do update set content = coalesce(excluded.content, sources.content)",
-      [projectId, s.url, s.title, s.text],
+      [project.id, s.url, s.title, s.text],
     );
   }
+  await saveArtifact(db, project.id, "research", { truncated: Boolean(research.truncated), pages: research.fetched.length }, research.text);
+  return { notes: research.text, fetched: research.fetched };
+}
+
+/**
+ * Étape 1a : recherche sourcée → synthèse → vérification des sources (code) → Red Team → décision (code).
+ * Termine en AWAITING_P1 (avec demande de validation Telegram) ou en ARCHIVED (avec la raison).
+ */
+export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Promise<"AWAITING_P1" | "ARCHIVED"> {
+  const { db, notifier } = deps;
+  let project = await getProject(db, projectId);
+  if (!project) throw new Error(`Projet ${projectId} introuvable`);
+  if (project.state === "IDEA") {
+    await transition(db, projectId, "IDEA", "RESEARCHING", "system", "recherche lancée");
+    await notifier.send(`🔎 Recherche lancée pour « ${project.title} ». Je reviens avec un dossier sourcé (environ 10 à 20 min).`);
+    project = { ...project, state: "RESEARCHING" };
+  }
+  if (project.state !== "RESEARCHING") throw new Error(`Projet dans l'état ${project.state}, recherche impossible`);
+
+  // 1. Recherche avec ouverture réelle des pages (réutilisée si elle a déjà été faite et payée).
+  const { notes, fetched } = await researchOnce(deps, project);
 
   // 2. Synthèse structurée.
   const pages = fetched.map((s) => `- ${s.url}${s.title ? ` (${s.title})` : ""}`).join("\n") || "(aucune page ouverte)";
@@ -119,8 +141,8 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
     agent: "synthesis",
     projectId,
     system: SYNTHESIS_SYSTEM,
-    prompt: `Demande :\n"""${project.request}"""\n\nNotes de recherche :\n"""${research.text.slice(0, 40_000)}"""\n\nPages ouvertes (seules URL citables) :\n${pages}\n\nForme attendue :\n${DOSSIER_SHAPE}`,
-    maxTokens: 6000,
+    prompt: `Demande :\n"""${project.request}"""\n\nNotes de recherche :\n"""${notes.slice(0, 40_000)}"""\n\nPages ouvertes (seules URL citables) :\n${pages}\n\nForme attendue :\n${DOSSIER_SHAPE}`,
+    maxTokens: 16000,
   });
 
   // 3. Vérification déterministe des sources.
@@ -132,7 +154,7 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
     projectId,
     system: RED_TEAM_SYSTEM,
     prompt: `Dossier vérifié :\n${JSON.stringify(dossier, null, 2).slice(0, 30_000)}\n\nForme attendue :\n${RED_TEAM_SHAPE}`,
-    maxTokens: 3000,
+    maxTokens: 6000,
   });
 
   // 5. Décision et sauvegarde.

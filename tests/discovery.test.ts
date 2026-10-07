@@ -184,6 +184,31 @@ describe("étape 1a de bout en bout (modèle simulé)", () => {
     await expect(runDiscovery({ db, llm, notifier: new NullNotifier() }, p.id)).rejects.toThrow(/invalide/);
     expect((await getProject(db, p.id))?.state).toBe("RESEARCHING");
   });
+
+  it("une synthèse coupée par la longueur est redemandée en plus concis", async () => {
+    const p = await createProject(db, "Projet à la synthèse trop longue");
+    const llm = new ScriptedLlm({
+      research: [researchOk],
+      synthesis: [{ text: '```json\n{"title": "coupé', truncated: true }, { text: json(draft()) }],
+      red_team: [{ text: json(redTeam()) }],
+    });
+    expect(await runDiscovery({ db, llm, notifier: new NullNotifier() }, p.id)).toBe("AWAITING_P1");
+    const synth = llm.calls.filter((c) => c.agent === "synthesis");
+    expect(synth[1]!.prompt).toContain("trop longue");
+    expect(synth.every((c) => c.acceptTruncated)).toBe(true);
+  });
+
+  it("une relance réutilise la recherche déjà payée au lieu de la refaire", async () => {
+    const p = await createProject(db, "Projet relancé après échec de synthèse");
+    const first = new ScriptedLlm({ research: [researchOk], synthesis: [{ text: "pas de json" }] });
+    await expect(runDiscovery({ db, llm: first, notifier: new NullNotifier() }, p.id)).rejects.toThrow();
+
+    const second = new ScriptedLlm({ synthesis: [{ text: json(draft()) }], red_team: [{ text: json(redTeam()) }] });
+    expect(await runDiscovery({ db, llm: second, notifier: new NullNotifier() }, p.id)).toBe("AWAITING_P1");
+    expect(second.calls.map((c) => c.agent)).not.toContain("research");
+    const dossier = await latestArtifact(db, p.id, "dossier");
+    expect(dossier?.markdown).toContain("« Offre Atelier : 5 000 FCFA par mois »");
+  });
 });
 
 describe("portes humaines", () => {
