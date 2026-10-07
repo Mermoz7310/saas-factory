@@ -24,8 +24,12 @@ afterAll(async () => {
 
 class FakeQueue implements Queue {
   ids: string[] = [];
+  specs: { id: string; instruction?: string }[] = [];
   async enqueueResearch(id: string) {
     this.ids.push(id);
+  }
+  async enqueueSpec(id: string, instruction?: string) {
+    this.specs.push(instruction ? { id, instruction } : { id });
   }
 }
 

@@ -8,16 +8,23 @@ export type Choice = "approve" | "reject" | "alt";
 
 /** Ce que chaque bouton déclenche : état attendu → nouvel état. */
 const OUTCOMES: Record<"P1" | "P2" | "P3", { from: State; approve: State; alt?: State; reject: State }> = {
-  P1: { from: "AWAITING_P1", approve: "DEMAND_TEST", alt: "SPECIFYING", reject: "ARCHIVED" },
-  P2: { from: "AWAITING_P2", approve: "BUILDING", alt: "SPECIFYING", reject: "ARCHIVED" },
+  // Le test de demande (1b) n'est pas encore construit : valider P1 lance directement la spec.
+  P1: { from: "AWAITING_P1", approve: "SPECIFYING", alt: "SPECIFYING", reject: "ARCHIVED" },
+  P2: { from: "AWAITING_P2", approve: "BUILDING", reject: "ARCHIVED" },
   P3: { from: "AWAITING_P3", approve: "PRODUCTION", alt: "BUILDING", reject: "BUILDING" },
 };
 
 export const BUTTONS: Record<"P1" | "P2" | "P3", { approve: string; alt?: string; reject: string }> = {
-  P1: { approve: "✅ Lancer le test de demande", alt: "⏩ Passer à la spec", reject: "❌ Archiver" },
-  P2: { approve: "✅ Approuver la spec", alt: "✏️ Retravailler", reject: "❌ Archiver" },
+  P1: { approve: "✅ Valider : rédiger la spec", reject: "❌ Archiver" },
+  P2: { approve: "✅ Approuver et geler la spec", reject: "❌ Archiver" },
   P3: { approve: "🚀 Mettre en production", reject: "↩️ Retour en construction" },
 };
+
+/** Annule la demande en attente d'une porte (ex. quand le propriétaire demande de retravailler). */
+export async function cancelPending(client: Pick<import("pg").PoolClient, "query">, projectId: string, gate: Gate): Promise<number> {
+  const res = await client.query("update approvals set status = 'cancelled', decided_at = now() where project_id = $1 and gate = $2 and status = 'pending'", [projectId, gate]);
+  return res.rowCount ?? 0;
+}
 
 export async function requestApproval(db: Db, notifier: Notifier, project: Project, gate: "P1" | "P2" | "P3", summary: string): Promise<string> {
   const { rows } = await db.query<{ id: string }>(

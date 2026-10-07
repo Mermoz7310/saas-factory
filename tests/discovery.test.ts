@@ -146,7 +146,7 @@ describe("étape 1a de bout en bout (modèle simulé)", () => {
 
     const last = notifier.sent.at(-1)!;
     expect(last.text).toContain("Porte P1");
-    expect(last.buttons?.flat().map((b) => b.label)).toEqual(["✅ Lancer le test de demande", "⏩ Passer à la spec", "❌ Archiver"]);
+    expect(last.buttons?.flat().map((b) => b.label)).toEqual(["✅ Valider : rédiger la spec", "❌ Archiver"]);
     const { rows } = await db.query("select status, telegram_message_id from approvals where project_id = $1", [p.id]);
     expect(rows).toEqual([{ status: "pending", telegram_message_id: notifier.sent.length }]);
   });
@@ -221,14 +221,14 @@ describe("portes humaines", () => {
     return { p, approvalId: rows[0]!.id };
   }
 
-  it("approuver P1 lance le test de demande ; un double clic est sans effet", async () => {
+  it("approuver P1 lance la spec ; un double clic est sans effet", async () => {
     const { p, approvalId } = await awaitingP1();
-    expect(await decideApproval(db, approvalId, "approve")).toEqual({ ok: true, projectId: p.id, newState: "DEMAND_TEST" });
+    expect(await decideApproval(db, approvalId, "approve")).toEqual({ ok: true, projectId: p.id, newState: "SPECIFYING" });
     expect(await decideApproval(db, approvalId, "approve")).toEqual({ ok: false, reason: "Cette demande a déjà été traitée." });
-    expect((await getProject(db, p.id))?.state).toBe("DEMAND_TEST");
+    expect((await getProject(db, p.id))?.state).toBe("SPECIFYING");
   });
 
-  it("refuser P1 archive le projet ; « passer à la spec » saute le test de demande", async () => {
+  it("refuser P1 archive le projet ; un ancien bouton « passer à la spec » reste valable", async () => {
     const a = await awaitingP1();
     await decideApproval(db, a.approvalId, "reject");
     expect((await getProject(db, a.p.id))?.state).toBe("ARCHIVED");

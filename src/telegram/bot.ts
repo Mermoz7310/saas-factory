@@ -29,6 +29,13 @@ export class TelegramNotifier implements Notifier {
       return null;
     }
   }
+  async sendFile(name: string, content: string): Promise<void> {
+    try {
+      await this.bot.api.sendDocument(this.ownerId, new InputFile(Buffer.from(content, "utf8"), name));
+    } catch (error) {
+      log.error({ err: error, name }, "envoi de fichier Telegram impossible");
+    }
+  }
 }
 
 async function reply(ctx: Context, r: cmd.Reply) {
@@ -63,6 +70,12 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
   bot.command("idee", async (ctx) => reply(ctx, await cmd.cmdIdee(deps, ctx.match)));
   bot.command("projets", async (ctx) => reply(ctx, await cmd.cmdProjets(deps)));
   bot.command("dossier", async (ctx) => reply(ctx, await cmd.cmdDossier(deps, ctx.match)));
+  bot.command("spec", async (ctx) => {
+    const r = await cmd.cmdSpec(deps, ctx.match);
+    await ctx.reply(clip(r.text));
+    for (const f of r.files ?? []) await ctx.replyWithDocument(new InputFile(Buffer.from(f.content, "utf8"), f.name));
+  });
+  bot.command("retravailler", async (ctx) => reply(ctx, await cmd.cmdRetravailler(deps, ctx.match)));
   bot.command("cout", async (ctx) => reply(ctx, await cmd.cmdCout(deps)));
   bot.command("stop", async (ctx) => reply(ctx, await cmd.cmdStop(deps)));
   bot.command("reprendre", async (ctx) => reply(ctx, await cmd.cmdReprendre(deps)));

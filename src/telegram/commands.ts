@@ -1,7 +1,7 @@
 import { setPaused, isPaused, spentTodayUsd } from "../budget.ts";
 import type { Db } from "../db/pool.ts";
-import { decide, type Choice } from "../domain/approvals.ts";
-import { createProject, getProject, latestArtifact, listActiveProjects, transition } from "../domain/projects.ts";
+import { cancelPending, decide, type Choice } from "../domain/approvals.ts";
+import { createProject, getProject, inTransaction, latestArtifact, listActiveProjects, transition, transitionIn } from "../domain/projects.ts";
 import { STATE_LABEL } from "../domain/states.ts";
 import type { Queue } from "../jobs.ts";
 
@@ -13,6 +13,8 @@ export const HELP = [
   "/idee <ton idée> — analyser une idée (recherche sourcée + Red Team)",
   "/projets — projets en cours",
   "/dossier <projet> — dossier complet d'un projet",
+  "/spec <projet> — spec, migration et tests d'un projet",
+  "/retravailler <projet> <consigne> — refaire la spec avec ta consigne",
   "/cout — dépenses IA du jour",
   "/relancer <projet> — relancer une étape en échec",
   "/stop — arrêt d'urgence (tout s'arrête avant le prochain appel IA)",
@@ -79,16 +81,56 @@ export async function cmdRelancer(deps: CommandDeps, slug: string): Promise<Repl
     "select from_state from project_events where project_id = $1 and to_state = 'FAILED' order by id desc limit 1",
     [project.id],
   );
-  if (rows[0]?.from_state !== "RESEARCHING") return { text: "Seule l'étape de recherche peut être relancée pour l'instant." };
-  await transition(deps.db, project.id, "FAILED", "RESEARCHING", "user", "relance manuelle");
-  await deps.queue.enqueueResearch(project.id);
-  return { text: `🔁 Recherche relancée pour ${project.slug}.` };
+  const from = rows[0]?.from_state;
+  if (from === "RESEARCHING") {
+    await transition(deps.db, project.id, "FAILED", "RESEARCHING", "user", "relance manuelle");
+    await deps.queue.enqueueResearch(project.id);
+    return { text: `🔁 Recherche relancée pour ${project.slug}.` };
+  }
+  if (from === "SPECIFYING") {
+    await transition(deps.db, project.id, "FAILED", "SPECIFYING", "user", "relance manuelle");
+    await deps.queue.enqueueSpec(project.id);
+    return { text: `🔁 Rédaction de la spec relancée pour ${project.slug}.` };
+  }
+  return { text: "Cette étape ne peut pas être relancée automatiquement." };
 }
 
 const NEXT_STEP_NOTE: Partial<Record<string, string>> = {
-  DEMAND_TEST: "Le test de demande (landing page) est la prochaine brique à construire : le projet attend ici.",
-  SPECIFYING: "La rédaction automatique de la spec est la prochaine brique à construire : le projet attend ici.",
+  SPECIFYING: "La rédaction de la spec démarre.",
+  BUILDING: "Spec gelée. La construction automatique est la prochaine brique de l'usine : le projet attend ici.",
 };
+
+export async function cmdSpec(deps: CommandDeps, slug: string): Promise<Reply & { files?: { name: string; content: string }[] }> {
+  const project = slug.trim() ? await getProject(deps.db, slug.trim()) : null;
+  if (!project) return { text: "Projet introuvable. Tape /projets pour voir les noms." };
+  const spec = await latestArtifact(deps.db, project.id, "spec");
+  if (!spec) return { text: `Pas encore de spec pour ${project.slug} (${STATE_LABEL[project.state]}).` };
+  const tests = await latestArtifact(deps.db, project.id, "test_plan");
+  const content = spec.content as { migration: { path: string; sql: string } };
+  return {
+    text: `📐 Spec ${project.slug} (version ${spec.version})`,
+    files: [
+      { name: `SPEC-${project.slug}-v${spec.version}.md`, content: spec.markdown },
+      { name: content.migration.path.split("/").pop()!, content: content.migration.sql },
+      ...(tests ? [{ name: `tests-acceptance-${project.slug}-v${spec.version}.ts.txt`, content: tests.markdown }] : []),
+    ],
+  };
+}
+
+/** /retravailler <projet> <consigne> : annule la porte P2 en attente et relance la spec avec la consigne. */
+export async function cmdRetravailler(deps: CommandDeps, args: string): Promise<Reply> {
+  const m = /^\s*(\S+)\s+([\s\S]{10,2000})$/.exec(args);
+  if (!m) return { text: "Usage : /retravailler <projet> <ta consigne, 10 caractères minimum>\nEx. : /retravailler mon-projet Retire la gestion des stocks, ajoute l'export PDF." };
+  const project = await getProject(deps.db, m[1]!);
+  if (!project) return { text: "Projet introuvable. Tape /projets pour voir les noms." };
+  if (project.state !== "AWAITING_P2") return { text: `Impossible : ${project.slug} est « ${STATE_LABEL[project.state]} » (il faut une spec en attente de validation).` };
+  await inTransaction(deps.db, async (c) => {
+    await cancelPending(c, project.id, "P2");
+    await transitionIn(c, project.id, "AWAITING_P2", "SPECIFYING", "user", `retravailler : ${m[2]!.slice(0, 200)}`);
+  });
+  await deps.queue.enqueueSpec(project.id, m[2]!.trim());
+  return { text: `✏️ Spec en cours de reprise pour ${project.slug} avec ta consigne. Les anciens boutons P2 ne sont plus valables.` };
+}
 
 /** Bouton d'une porte : « ap:<id>:<choix> ». */
 export async function onApprovalButton(deps: CommandDeps, data: string): Promise<{ toast: string; append?: string }> {
@@ -97,6 +139,7 @@ export async function onApprovalButton(deps: CommandDeps, data: string): Promise
   try {
     const res = await decide(deps.db, m[1]!, m[2] as Choice);
     if (!res.ok) return { toast: res.reason };
+    if (res.newState === "SPECIFYING") await deps.queue.enqueueSpec(res.projectId);
     const note = NEXT_STEP_NOTE[res.newState];
     return { toast: "Décision enregistrée.", append: `\n\n➡️ ${STATE_LABEL[res.newState]}${note ? `\n${note}` : ""}` };
   } catch {
