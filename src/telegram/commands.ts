@@ -73,15 +73,20 @@ export async function cmdReprendre(deps: CommandDeps): Promise<Reply> {
   return { text: "▶️ Usine relancée." };
 }
 
+/** État dans lequel se trouvait le projet au moment de son échec. */
+async function failedFrom(deps: CommandDeps, projectId: string): Promise<string | null | undefined> {
+  const { rows } = await deps.db.query<{ from_state: string | null }>(
+    "select from_state from project_events where project_id = $1 and to_state = 'FAILED' order by id desc limit 1",
+    [projectId],
+  );
+  return rows[0]?.from_state;
+}
+
 export async function cmdRelancer(deps: CommandDeps, slug: string): Promise<Reply> {
   const project = slug.trim() ? await getProject(deps.db, slug.trim()) : null;
   if (!project) return { text: "Projet introuvable. Tape /projets pour voir les noms." };
   if (project.state !== "FAILED") return { text: `Rien à relancer : ${project.slug} est « ${STATE_LABEL[project.state]} ».` };
-  const { rows } = await deps.db.query<{ from_state: string | null }>(
-    "select from_state from project_events where project_id = $1 and to_state = 'FAILED' order by id desc limit 1",
-    [project.id],
-  );
-  const from = rows[0]?.from_state;
+  const from = await failedFrom(deps, project.id);
   if (from === "RESEARCHING") {
     await transition(deps.db, project.id, "FAILED", "RESEARCHING", "user", "relance manuelle");
     await deps.queue.enqueueResearch(project.id);
@@ -123,10 +128,17 @@ export async function cmdRetravailler(deps: CommandDeps, args: string): Promise<
   if (!m) return { text: "Usage : /retravailler <projet> <ta consigne, 10 caractères minimum>\nEx. : /retravailler mon-projet Retire la gestion des stocks, ajoute l'export PDF." };
   const project = await getProject(deps.db, m[1]!);
   if (!project) return { text: "Projet introuvable. Tape /projets pour voir les noms." };
-  if (project.state !== "AWAITING_P2") return { text: `Impossible : ${project.slug} est « ${STATE_LABEL[project.state]} » (il faut une spec en attente de validation).` };
+  const failedSpec = project.state === "FAILED" && (await failedFrom(deps, project.id)) === "SPECIFYING";
+  if (project.state !== "AWAITING_P2" && !failedSpec) {
+    return { text: `Impossible : ${project.slug} est « ${STATE_LABEL[project.state]} » (il faut une spec en attente de validation ou en échec).` };
+  }
   await inTransaction(deps.db, async (c) => {
-    await cancelPending(c, project.id, "P2");
-    await transitionIn(c, project.id, "AWAITING_P2", "SPECIFYING", "user", `retravailler : ${m[2]!.slice(0, 200)}`);
+    if (failedSpec) {
+      await transitionIn(c, project.id, "FAILED", "SPECIFYING", "user", `retravailler : ${m[2]!.slice(0, 200)}`);
+    } else {
+      await cancelPending(c, project.id, "P2");
+      await transitionIn(c, project.id, "AWAITING_P2", "SPECIFYING", "user", `retravailler : ${m[2]!.slice(0, 200)}`);
+    }
   });
   await deps.queue.enqueueSpec(project.id, m[2]!.trim());
   return { text: `✏️ Spec en cours de reprise pour ${project.slug} avec ta consigne. Les anciens boutons P2 ne sont plus valables.` };

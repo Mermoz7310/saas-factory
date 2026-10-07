@@ -471,6 +471,15 @@ describe("porte P2 et commandes", () => {
     expect(r.files?.map((f) => f.name)).toHaveLength(3);
   });
 
+  it("/retravailler reprend aussi une spec en échec, avec la consigne", async () => {
+    const p = await projectInSpecifying("Projet dont la spec a échoué puis est retravaillée");
+    await transition(db, p.id, "SPECIFYING", "FAILED", "system", "erreur");
+    const queue = new FakeQueue();
+    expect((await cmd.cmdRetravailler({ db, queue }, `${p.slug} Précise le calcul des sommes dues.`)).text).toContain("reprise");
+    expect((await getProject(db, p.id))?.state).toBe("SPECIFYING");
+    expect(queue.specs).toEqual([{ id: p.id, instruction: "Précise le calcul des sommes dues." }]);
+  });
+
   it("/relancer reprend une spec en échec", async () => {
     const p = await projectInSpecifying("Projet dont la spec a échoué");
     await transition(db, p.id, "SPECIFYING", "FAILED", "system", "erreur");
