@@ -267,3 +267,12 @@ describe("notes de recherche coupées", () => {
     await expect(runDiscovery({ db, llm: llmKo, notifier: new NullNotifier() }, ko.id)).rejects.toThrow(/coupées trop tôt/);
   });
 });
+
+describe("résumé Telegram", () => {
+  it("ne coupe jamais un mot : fin de phrase, sinon mot entier suivi de …", async () => {
+    const { shorten } = await import("../src/pipeline/dossier.ts");
+    expect(shorten("Court.", 50)).toBe("Court.");
+    expect(shorten("Première phrase complète ici. Deuxième phrase beaucoup trop longue pour tenir", 50)).toBe("Première phrase complète ici.");
+    expect(shorten("un texte sans aucun point qui continue encore et encore", 30)).toBe("un texte sans aucun point qui…");
+  });
+});

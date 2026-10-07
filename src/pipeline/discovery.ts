@@ -4,7 +4,7 @@ import { requestApproval } from "../domain/approvals.ts";
 import { getProject, latestArtifact, saveArtifact, transition, type Project } from "../domain/projects.ts";
 import { extractJson, type FetchedSource, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
-import { decide, dossierSchema, redTeamSchema, renderDossier, verifyDossier, type DossierDraft, type RedTeam } from "./dossier.ts";
+import { decide, dossierSchema, shorten, redTeamSchema, renderDossier, verifyDossier, type DossierDraft, type RedTeam } from "./dossier.ts";
 
 export const PROMPT_VERSION = "discovery-v3";
 
@@ -181,10 +181,10 @@ function p1Summary(project: Project, d: ReturnType<typeof verifyDossier>, r: Red
     `📋 Porte P1 — ${d.title}`,
     `Score : ${d.total_score}/100 (${scores})`,
     "",
-    `Problème : ${d.problem.slice(0, 300)}`,
-    `Cible : ${d.target.slice(0, 200)}`,
+    `Problème : ${shorten(d.problem, 400)}`,
+    `Cible : ${shorten(d.target, 250)}`,
     "",
-    `Contre-argument : ${r.strongest_argument_against.slice(0, 300)}`,
+    `Contre-argument : ${shorten(r.strongest_argument_against, 450)}`,
     "",
     `Voie : ${d.golden_path === "afrique" ? "Afrique (PWA + mobile money)" : "Europe (web + Stripe)"}`,
     `Preuves : ${d.claims.length} citation(s) vérifiée(s) mot pour mot, ${d.verification.claims_removed + d.verification.claims_quote_mismatch} retirée(s).`,

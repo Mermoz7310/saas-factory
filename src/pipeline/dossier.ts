@@ -204,3 +204,14 @@ export function renderDossier(d: VerifiedDossier, r: RedTeam, sources: { url: st
   lines.push("## Sources ouvertes", ...sources.map((s) => `- [${s.title ?? s.url}](${s.url})`));
   return lines.join("\n");
 }
+
+/** Raccourcit un texte sans couper un mot : fin de phrase si possible, sinon dernier mot entier suivi de « … ». */
+export function shorten(text: string, max: number): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sentenceEnd = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(" ! "), cut.lastIndexOf(" ? "));
+  if (sentenceEnd >= max * 0.5) return cut.slice(0, sentenceEnd + 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:–-]+$/, "")}…`;
+}
