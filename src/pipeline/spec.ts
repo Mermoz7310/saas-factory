@@ -35,8 +35,9 @@ Règles :
 - Le MVP doit être construisible en quelques jours : en cas de doute, retire plutôt que d'ajouter.
 
 LIMITES STRICTES (au-delà, la réponse est refusée) : 8 entités, 20 champs par entité, 8 contraintes par entité, 10 stories, 5 critères par story,
-6 écrans calculés, 20 règles métier (≤ 500 caractères chacune ; ne répète pas les contraintes déjà déclarées), 15 éléments hors périmètre,
-libellés ≤ 60 caractères, messages d'erreur ≤ 160 caractères, résumé ≤ 800 caractères.
+6 écrans calculés, 20 règles métier (ne répète pas les contraintes déjà déclarées), 15 éléments hors périmètre,
+libellés ≤ 60 caractères, messages d'erreur ≤ 200 caractères, description d'un écran ≤ 2000 caractères, résumé ≤ 1500 caractères.
+Sois précis mais concis : la réponse complète doit rester sous 15 000 mots.
 Réponds uniquement par un objet JSON dans un bloc \`\`\`json.`;
 
 const SPEC_SHAPE = `{
@@ -283,7 +284,7 @@ export async function runSpec(deps: SpecDeps, projectId: string, instruction?: s
       ]
         .filter(Boolean)
         .join("\n\n"),
-      maxTokens: 16000,
+      maxTokens: 32000,
     }));
   if (!reused) await saveArtifact(db, projectId, "spec_draft", { spec }, spec.product_name);
 

@@ -121,6 +121,15 @@ describe("budget, arrêt d'urgence et journal des appels IA", () => {
     expect(rows).toEqual([{ agent: "test", status: "ok", cost_usd: 0.007 }]);
   });
 
+  it("utilise le flux (streaming) quand il est disponible", async () => {
+    const base = fakeApi([{ content: [{ type: "text", text: "via le flux", citations: null }] as Anthropic.Messages.ContentBlock[] }]);
+    let streamed = 0;
+    const api = { create: async () => { throw new Error("create ne doit pas être appelé"); }, stream: (params: unknown) => { streamed++; return { finalMessage: () => base.create(params as never) }; } } as unknown as MessagesApi;
+    const res = await new ClaudeLlm(db, api).call({ agent: "flux", projectId: null, tier: "standard", promptVersion: "t", system: "s", prompt: "p", maxTokens: 1000 });
+    expect(res.text).toBe("via le flux");
+    expect(streamed).toBe(1);
+  });
+
   it("reprend automatiquement une réponse mise en pause (pause_turn) et collecte les pages lues", async () => {
     const fetchBlock = {
       type: "web_fetch_tool_result",

@@ -27,7 +27,7 @@ if (config.ANTHROPIC_API_KEY) {
   const llm = new ClaudeLlm(db, new Anthropic({
       apiKey: config.ANTHROPIC_API_KEY,
       maxRetries: 3,
-      timeout: 10 * 60_000,
+      timeout: 20 * 60_000,
       ...(config.ANTHROPIC_WORKSPACE_ID ? { defaultHeaders: { "anthropic-workspace-id": config.ANTHROPIC_WORKSPACE_ID } } : {}),
     }).messages);
   runner = await run({ pgPool: db, concurrency: config.WORKER_CONCURRENCY, noHandleSignals: true, taskList: makeTaskList({ db, llm, notifier }) });

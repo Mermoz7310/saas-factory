@@ -31,7 +31,7 @@ export interface Llm {
 }
 
 /** Interface minimale du SDK, pour pouvoir le remplacer dans les tests. */
-export type MessagesApi = Pick<Anthropic["messages"], "create">;
+export type MessagesApi = Pick<Anthropic["messages"], "create"> & Partial<Pick<Anthropic["messages"], "stream">>;
 
 const MAX_PAUSE_RESUMES = 4;
 const FETCH_MAX_CONTENT_TOKENS = 12_000;
@@ -80,13 +80,15 @@ export class ClaudeLlm implements Llm {
 
     try {
       for (let round = 0; ; round++) {
-        const res = await this.api.create({
+        const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
           model,
           max_tokens: req.maxTokens,
           system: req.system,
           messages,
           ...(tools.length ? { tools } : {}),
-        });
+        };
+        // Flux (streaming) quand il est disponible : indispensable pour les longues réponses (pas de coupure réseau).
+        const res = this.api.stream ? await this.api.stream(params).finalMessage() : await this.api.create(params);
         usage.input_tokens += res.usage.input_tokens;
         usage.output_tokens += res.usage.output_tokens;
         usage.cache_creation_input_tokens += res.usage.cache_creation_input_tokens ?? 0;

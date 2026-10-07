@@ -23,7 +23,7 @@ const ident = z
 const enumValue = z.string().regex(/^[a-z][a-z0-9_]{0,29}$/, "valeur d'enum en snake_case");
 const segment = z.string().regex(/^[a-z][a-z0-9-]{1,29}$/, "segment d'URL en kebab-case");
 const uiLabel = z.string().min(1).max(60);
-const uiMessage = z.string().min(5).max(160);
+const uiMessage = z.string().min(5).max(200);
 
 export const FIELD_TYPES = ["text", "long_text", "integer", "decimal", "money_xof", "money_eur", "boolean", "date", "datetime", "enum", "ref"] as const;
 const NUMERIC_TYPES = new Set(["integer", "decimal", "money_xof", "money_eur"]);
@@ -79,43 +79,43 @@ export const viewSchema = z.object({
   name: z.string().min(2).max(60),
   /** "" = accueil de l'organisation (/app/<slug>). */
   route_segment: z.union([z.literal(""), segment]),
-  description: z.string().min(10).max(400),
+  description: z.string().min(10).max(2000),
   testids: z.array(z.string().regex(/^[a-z][a-z0-9-]{1,40}$/)).min(1).max(10),
   /** Libellés exacts des champs de filtre de cet écran (ex. "Mois"). */
   labels: z.array(uiLabel).max(6).default([]),
 });
 
 const criterion = z.object({
-  given: z.string().min(5).max(300),
-  when: z.string().min(5).max(300),
-  then: z.string().min(5).max(300),
+  given: z.string().min(5).max(600),
+  when: z.string().min(5).max(600),
+  then: z.string().min(5).max(600),
 });
 
 export const storySchema = z.object({
   id: z.string().regex(/^S\d{1,2}$/),
-  as: z.string().min(2).max(80),
-  want: z.string().min(10).max(300),
-  so_that: z.string().min(5).max(300),
+  as: z.string().min(2).max(120),
+  want: z.string().min(10).max(500),
+  so_that: z.string().min(5).max(500),
   entities: z.array(ident).min(1).max(5),
   acceptance: z.array(criterion).min(1).max(5),
 });
 
 export const specSchema = z.object({
   product_name: z.string().min(2).max(60),
-  summary: z.string().min(30).max(800),
+  summary: z.string().min(30).max(1500),
   golden_path: z.enum(["europe", "afrique"]),
   variants: z
     .array(z.object({ name: z.string().min(2).max(60), description: z.string().min(10).max(400), chosen: z.boolean() }))
     .length(3),
-  variant_rationale: z.string().min(20).max(600),
-  pricing: z.object({ amount: z.number().positive(), currency: z.enum(["XOF", "EUR"]), period: z.enum(["mois", "an"]), rationale: z.string().min(10).max(400) }),
-  roles_mapping: z.string().min(10).max(400),
+  variant_rationale: z.string().min(20).max(1200),
+  pricing: z.object({ amount: z.number().positive(), currency: z.enum(["XOF", "EUR"]), period: z.enum(["mois", "an"]), rationale: z.string().min(10).max(800) }),
+  roles_mapping: z.string().min(10).max(800),
   entities: z.array(entitySchema).min(1).max(8),
   views: z.array(viewSchema).max(6).default([]),
   stories: z.array(storySchema).min(1).max(10),
-  business_rules: z.array(z.string().min(10).max(500)).max(20),
+  business_rules: z.array(z.string().min(10).max(1000)).max(20),
   out_of_scope: z.array(z.string().min(5).max(300)).max(15),
-  prospecting: z.string().min(20).max(800),
+  prospecting: z.string().min(20).max(1500),
 });
 
 export type Spec = z.infer<typeof specSchema>;
