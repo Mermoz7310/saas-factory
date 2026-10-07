@@ -33,6 +33,10 @@ Règles :
 - Chaque entité est utilisée par au moins une story ; chaque story liste les entités qu'elle touche.
 - 3 variantes du produit, exactement une "chosen": true, et la justification du choix.
 - Le MVP doit être construisible en quelques jours : en cas de doute, retire plutôt que d'ajouter.
+
+LIMITES STRICTES (au-delà, la réponse est refusée) : 8 entités, 20 champs par entité, 8 contraintes par entité, 10 stories, 5 critères par story,
+6 écrans calculés, 20 règles métier (≤ 500 caractères chacune ; ne répète pas les contraintes déjà déclarées), 15 éléments hors périmètre,
+libellés ≤ 60 caractères, messages d'erreur ≤ 160 caractères, résumé ≤ 800 caractères.
 Réponds uniquement par un objet JSON dans un bloc \`\`\`json.`;
 
 const SPEC_SHAPE = `{
@@ -142,6 +146,7 @@ async function structured<T>(
 ): Promise<T> {
   let prompt = params.prompt;
   let problems: string[] = [];
+  const history: string[] = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await deps.llm.call({ ...params, prompt, promptVersion: SPEC_PROMPT_VERSION, acceptTruncated: true });
     if (res.truncated) {
@@ -155,9 +160,10 @@ async function structured<T>(
         problems = [error instanceof z.ZodError ? z.prettifyError(error) : String(error)];
       }
     }
-    prompt = `${params.prompt}\n\nTa réponse précédente a été refusée par les contrôles automatiques :\n- ${problems.join("\n- ").slice(0, 2500)}\nCorrige et renvoie le JSON complet.`;
+    history.push(`essai ${attempt} : ${problems.slice(0, 2).join(" ; ").slice(0, 200)}`);
+    prompt = `${params.prompt}\n\n⚠️ ESSAI ${attempt + 1}/3 — ta réponse précédente a été REFUSÉE par les contrôles automatiques pour ces raisons :\n- ${problems.join("\n- ").slice(0, 2500)}\nRenvoie le JSON complet en corrigeant CHACUN de ces points (respecte les LIMITES STRICTES : regroupe ou retire plutôt que de dépasser).`;
   }
-  throw new Error(`${params.agent} : réponse refusée après 3 essais — ${problems.slice(0, 3).join(" ; ").slice(0, 400)}`);
+  throw new Error(`${params.agent} : réponse refusée après 3 essais — ${history.join(" | ")}`);
 }
 
 /** Extrait le premier bloc de code TypeScript d'une réponse. */

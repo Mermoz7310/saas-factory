@@ -23,6 +23,7 @@ const ident = z
 const enumValue = z.string().regex(/^[a-z][a-z0-9_]{0,29}$/, "valeur d'enum en snake_case");
 const segment = z.string().regex(/^[a-z][a-z0-9-]{1,29}$/, "segment d'URL en kebab-case");
 const uiLabel = z.string().min(1).max(60);
+const uiMessage = z.string().min(5).max(160);
 
 export const FIELD_TYPES = ["text", "long_text", "integer", "decimal", "money_xof", "money_eur", "boolean", "date", "datetime", "enum", "ref"] as const;
 const NUMERIC_TYPES = new Set(["integer", "decimal", "money_xof", "money_eur"]);
@@ -52,11 +53,11 @@ export const fieldSchema = z
 /** Règles garanties PAR LA BASE (générées en SQL par le code). */
 export const constraintSchema = z.discriminatedUnion("kind", [
   /** Unicité dans l'organisation, éventuellement limitée (ex. un seul contrat actif par véhicule). */
-  z.object({ kind: z.literal("unique"), fields: z.array(ident).min(1).max(3), when: z.object({ field: ident, equals: enumValue }).optional(), message: uiLabel }),
+  z.object({ kind: z.literal("unique"), fields: z.array(ident).min(1).max(3), when: z.object({ field: ident, equals: enumValue }).optional(), message: uiMessage }),
   /** Champ obligatoire quand un autre champ prend certaines valeurs (ex. référence obligatoire si paiement Wave). */
-  z.object({ kind: z.literal("required_when"), field: ident, when: z.object({ field: ident, in: z.array(enumValue).min(1).max(8) }), message: uiLabel }),
+  z.object({ kind: z.literal("required_when"), field: ident, when: z.object({ field: ident, in: z.array(enumValue).min(1).max(8) }), message: uiMessage }),
   /** Date de fin postérieure ou égale à la date de début. */
-  z.object({ kind: z.literal("date_order"), start: ident, end: ident, message: uiLabel }),
+  z.object({ kind: z.literal("date_order"), start: ident, end: ident, message: uiMessage }),
 ]);
 export type Constraint = z.infer<typeof constraintSchema>;
 
@@ -68,7 +69,7 @@ export const entitySchema = z.object({
   /** Champ texte affiché comme lien vers la fiche dans la liste. */
   title_field: ident,
   fields: z.array(fieldSchema).min(1).max(20),
-  constraints: z.array(constraintSchema).max(6).default([]),
+  constraints: z.array(constraintSchema).max(8).default([]),
   /** Seuls admin/owner peuvent supprimer (sinon tout membre). */
   delete_requires_admin: z.boolean(),
 });
@@ -79,9 +80,9 @@ export const viewSchema = z.object({
   /** "" = accueil de l'organisation (/app/<slug>). */
   route_segment: z.union([z.literal(""), segment]),
   description: z.string().min(10).max(400),
-  testids: z.array(z.string().regex(/^[a-z][a-z0-9-]{1,40}$/)).min(1).max(8),
+  testids: z.array(z.string().regex(/^[a-z][a-z0-9-]{1,40}$/)).min(1).max(10),
   /** Libellés exacts des champs de filtre de cet écran (ex. "Mois"). */
-  labels: z.array(uiLabel).max(4).default([]),
+  labels: z.array(uiLabel).max(6).default([]),
 });
 
 const criterion = z.object({
@@ -112,8 +113,8 @@ export const specSchema = z.object({
   entities: z.array(entitySchema).min(1).max(8),
   views: z.array(viewSchema).max(6).default([]),
   stories: z.array(storySchema).min(1).max(10),
-  business_rules: z.array(z.string().min(10).max(400)).max(12),
-  out_of_scope: z.array(z.string().min(5).max(200)).max(10),
+  business_rules: z.array(z.string().min(10).max(500)).max(20),
+  out_of_scope: z.array(z.string().min(5).max(300)).max(15),
   prospecting: z.string().min(20).max(800),
 });
 
