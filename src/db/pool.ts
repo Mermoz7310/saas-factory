@@ -7,5 +7,8 @@ pg.types.setTypeParser(pg.types.builtins.NUMERIC, (v) => Number(v));
 export type Db = pg.Pool;
 
 export function createPool(connectionString: string): Db {
-  return new pg.Pool({ connectionString, max: 5 });
+  const pool = new pg.Pool({ connectionString, max: 5 });
+  // Une connexion inactive coupée (redémarrage de la base) ne doit pas faire tomber l'usine : le pool se reconnecte.
+  pool.on("error", (err) => process.stderr.write(`[db] connexion inactive perdue : ${err.message}\n`));
+  return pool;
 }
