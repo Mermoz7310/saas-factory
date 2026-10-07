@@ -41,7 +41,16 @@ export const dossierSchema = z.object({
     rationale: z.string().min(10).max(400),
   }),
   mvp_features: z.array(z.string().min(3).max(160)).min(3).max(10),
-  claims: z.array(z.object({ text: z.string().min(10).max(400), source_url: z.string() })).max(20),
+  claims: z
+    .array(
+      z.object({
+        text: z.string().min(10).max(400),
+        source_url: z.string(),
+        /** Extrait recopié mot pour mot de la page (vérifié par le code). */
+        quote: z.string().min(15).max(300),
+      }),
+    )
+    .max(20),
   scores: z.object({
     pain: criterion,
     frequency: criterion,
@@ -49,7 +58,7 @@ export const dossierSchema = z.object({
     acquisition: criterion,
     feasibility: criterion,
   }),
-  fits_golden_path: z.boolean(),
+  golden_path: z.enum(["europe", "afrique", "aucune"]),
   golden_path_reason: z.string().min(5).max(400),
 });
 export type DossierDraft = z.infer<typeof dossierSchema>;
@@ -63,8 +72,10 @@ export const redTeamSchema = z.object({
 export type RedTeam = z.infer<typeof redTeamSchema>;
 
 export type VerifiedDossier = DossierDraft & {
+  fits_golden_path: boolean;
   verification: {
     claims_removed: number;
+    claims_quote_mismatch: number;
     competitors_unverified: string[];
     scores_capped: Criterion[];
   };
@@ -85,17 +96,38 @@ export function normalizeUrl(url: string): string {
 /** Score plafonné quand un critère n'a aucune source vérifiée : on ne note pas haut sans preuve. */
 export const UNSOURCED_SCORE_CAP = 2;
 
+/** Rend deux textes comparables : casse, espaces, apostrophes et guillemets typographiques, tirets. */
+export function normalizeText(t: string): string {
+  return t
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u02bc`´]/g, "'")
+    .replace(/[\u201c\u201d«»]/g, '"')
+    .replace(/[\u2010-\u2015]/g, "-")
+    .replace(/[\u00a0\u202f\s]+/g, " ")
+    .trim();
+}
+
+export type PageText = { url: string; text: string | null };
+
 /**
  * Vérification déterministe (aucune IA) : seules les pages réellement ouvertes pendant la recherche comptent.
- * - affirmation sans source ouverte → supprimée
+ * - affirmation dont la page n'a pas été ouverte → supprimée
+ * - affirmation dont la citation ne figure pas mot pour mot dans la page (ou page illisible, ex. PDF) → supprimée
  * - concurrent sans source ouverte → signalé « non vérifié »
  * - critère sans aucune source ouverte → score plafonné à 2
  */
-export function verifyDossier(draft: DossierDraft, fetchedUrls: Iterable<string>): VerifiedDossier {
-  const allowed = new Set([...fetchedUrls].map(normalizeUrl));
-  const ok = (u: string) => allowed.has(normalizeUrl(u));
+export function verifyDossier(draft: DossierDraft, pages: Iterable<PageText>): VerifiedDossier {
+  const byUrl = new Map<string, string | null>();
+  for (const p of pages) byUrl.set(normalizeUrl(p.url), p.text === null ? null : normalizeText(p.text));
+  const ok = (u: string) => byUrl.has(normalizeUrl(u));
 
-  const claims = draft.claims.filter((c) => ok(c.source_url));
+  const opened = draft.claims.filter((c) => ok(c.source_url));
+  const claims = opened.filter((c) => {
+    const text = byUrl.get(normalizeUrl(c.source_url));
+    const quote = normalizeText(c.quote);
+    return Boolean(text && quote.length >= 15 && text.includes(quote));
+  });
   const competitors_unverified = draft.competitors.filter((c) => !ok(c.source_url)).map((c) => c.name);
 
   const scores_capped: Criterion[] = [];
@@ -111,10 +143,16 @@ export function verifyDossier(draft: DossierDraft, fetchedUrls: Iterable<string>
   const total_score = CRITERIA.reduce((sum, k) => sum + scores[k].score, 0) * 4;
   return {
     ...draft,
+    fits_golden_path: draft.golden_path !== "aucune",
     claims,
     scores,
     total_score,
-    verification: { claims_removed: draft.claims.length - claims.length, competitors_unverified, scores_capped },
+    verification: {
+      claims_removed: draft.claims.length - opened.length,
+      claims_quote_mismatch: opened.length - claims.length,
+      competitors_unverified,
+      scores_capped,
+    },
   };
 }
 
@@ -124,7 +162,7 @@ export type Decision = { next: "AWAITING_P1" | "ARCHIVED"; reason: string };
 export function decide(dossier: VerifiedDossier, redTeam: RedTeam): Decision {
   if (!dossier.fits_golden_path) return { next: "ARCHIVED", reason: `Hors périmètre de l'usine : ${dossier.golden_path_reason}` };
   if (redTeam.blocking) return { next: "ARCHIVED", reason: `Motif bloquant (Red Team) : ${redTeam.blocking_reason ?? "non précisé"}` };
-  if (dossier.claims.length < 3) return { next: "ARCHIVED", reason: "Preuves insuffisantes : moins de 3 affirmations sourcées par des pages ouvertes." };
+  if (dossier.claims.length < 3) return { next: "ARCHIVED", reason: "Preuves insuffisantes : moins de 3 affirmations dont la citation a été retrouvée mot pour mot dans la page source." };
   return { next: "AWAITING_P1", reason: `Score ${dossier.total_score}/100, prêt pour ta validation.` };
 }
 
@@ -137,7 +175,8 @@ function fmtPrice(p: DossierDraft["price_hypothesis"]): string {
 /** Fiche d'une page envoyée pour la porte P1. */
 export function renderDossier(d: VerifiedDossier, r: RedTeam, sources: { url: string; title: string | null }[]): string {
   const lines: string[] = [];
-  lines.push(`# ${d.title}`, "", `**Score : ${d.total_score}/100**`, "");
+  const path = d.golden_path === "europe" ? "Europe (web + Stripe)" : d.golden_path === "afrique" ? "Afrique (PWA mobile + mobile money)" : "aucune (hors périmètre)";
+  lines.push(`# ${d.title}`, "", `**Score : ${d.total_score}/100** — voie : ${path}`, "");
   lines.push("## Problème", d.problem, "", "## Cible", d.target, "", "## Solutions actuelles", d.current_solutions, "");
   lines.push("## Scores", "| Critère | Note | Justification |", "| --- | --- | --- |");
   for (const k of CRITERIA) {
@@ -154,11 +193,12 @@ export function renderDossier(d: VerifiedDossier, r: RedTeam, sources: { url: st
   lines.push("", `## Prix envisagé`, `${fmtPrice(d.price_hypothesis)} — ${d.price_hypothesis.rationale}`, "");
   lines.push("## MVP", ...d.mvp_features.map((f) => `- ${f}`), "");
   lines.push("## Contre-argument le plus fort (Red Team)", r.strongest_argument_against, "", "## Risques", ...r.risks.map((x) => `- ${x}`), "");
-  lines.push("## Preuves", ...d.claims.map((c) => `- ${c.text} ([source](${c.source_url}))`), "");
+  lines.push("## Preuves", ...d.claims.map((c) => `- ${c.text}\n  > « ${c.quote} » ([source](${c.source_url}))`), "");
   lines.push(
     "## Contrôle des sources",
     `- ${sources.length} page(s) réellement ouverte(s)`,
     `- ${d.verification.claims_removed} affirmation(s) supprimée(s) faute de source ouverte`,
+    `- ${d.verification.claims_quote_mismatch} affirmation(s) supprimée(s) : citation introuvable dans la page`,
     "",
   );
   lines.push("## Sources ouvertes", ...sources.map((s) => `- [${s.title ?? s.url}](${s.url})`));

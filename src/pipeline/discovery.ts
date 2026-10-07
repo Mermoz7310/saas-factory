@@ -6,10 +6,12 @@ import { extractJson, type FetchedSource, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
 import { decide, dossierSchema, redTeamSchema, renderDossier, verifyDossier, type DossierDraft, type RedTeam } from "./dossier.ts";
 
-export const PROMPT_VERSION = "discovery-v1";
+export const PROMPT_VERSION = "discovery-v2";
 
-const GOLDEN_PATH = `Voie dorée de l'usine (seul périmètre constructible) : SaaS B2B web, multi-organisations, Next.js + Supabase + Stripe.
-Hors périmètre : application mobile native, mode hors ligne, marketplace, temps réel complexe, matériel, IA embarquée lourde.`;
+const GOLDEN_PATH = `Périmètre constructible par l'usine (deux « voies dorées ») :
+- "europe" : SaaS B2B web multi-organisations, utilisé surtout sur ordinateur, paiement par carte (Stripe).
+- "afrique" : SaaS multi-organisations en application web installable sur téléphone (PWA, mobile d'abord), qui affiche les dernières données consultées quand le réseau coupe (mais sans saisie hors ligne), paiement par mobile money (Wave, Orange Money) via un agrégateur.
+- "aucune" : hors périmètre, à savoir application native des stores, saisie hors ligne avec synchronisation, marketplace, temps réel complexe, matériel, IA embarquée lourde.`;
 
 const RESEARCH_SYSTEM = `Tu es analyste de marché pour une usine à SaaS. Tu travailles en français.
 Ta mission : vérifier si un problème réel et payant existe, avec des preuves.
@@ -17,11 +19,12 @@ Règles :
 - Cherche avec web_search, puis OUVRE avec web_fetch chaque page sur laquelle tu t'appuies. Une page seulement vue dans les résultats de recherche ne compte pas comme preuve.
 - Cherche : preuves du problème (forums, avis, articles, rapports), solutions actuelles (Excel, papier, WhatsApp, logiciels), concurrents et leurs prix, disposition à payer de la cible.
 - Privilégie les sources de la zone géographique concernée.
-- Termine par des notes structurées : chaque fait suivi de l'URL exacte de la page ouverte.
+- Termine par des notes structurées : chaque fait suivi de l'URL exacte de la page ouverte ET d'une citation exacte de 8 à 30 mots recopiée mot pour mot de cette page, entre guillemets.
 ${GOLDEN_PATH}`;
 
 const SYNTHESIS_SYSTEM = `Tu rédiges le dossier d'opportunité d'une usine à SaaS, en français, de façon factuelle et prudente.
 Tu ne peux citer QUE les URL de la liste « Pages ouvertes » fournie. Toute autre URL sera supprimée automatiquement, et un critère sans source ouverte verra sa note plafonnée à 2/5.
+Chaque affirmation porte une "quote" : un extrait recopié MOT POUR MOT des notes de recherche (entre guillemets dans les notes). Le code vérifie que cet extrait figure dans la page ; sinon l'affirmation est supprimée. Ne reformule jamais une citation.
 N'invente aucun chiffre. Si une information manque, dis-le.
 ${GOLDEN_PATH}
 Réponds uniquement par un objet JSON dans un bloc \`\`\`json, sans autre texte.`;
@@ -37,13 +40,13 @@ const DOSSIER_SHAPE = `{
   "competitors": [{ "name": "...", "source_url": "https://...", "price": "... ou null", "weakness": "..." }],
   "price_hypothesis": { "amount": 5000, "currency": "XOF|EUR|USD", "period": "mois|an|unique", "rationale": "..." },
   "mvp_features": ["3 à 10 fonctionnalités"],
-  "claims": [{ "text": "fait vérifiable", "source_url": "https://..." }],
+  "claims": [{ "text": "fait vérifiable", "source_url": "https://...", "quote": "extrait exact de la page, 8 à 30 mots" }],
   "scores": {
     "pain": { "score": 1-5, "justification": "...", "source_urls": ["https://..."] },
     "frequency": {...}, "willingness_to_pay": {...}, "acquisition": {...}, "feasibility": {...}
   },
-  "fits_golden_path": true,
-  "golden_path_reason": "..."
+  "golden_path": "europe | afrique | aucune",
+  "golden_path_reason": "pourquoi cette voie"
 }`;
 
 const RED_TEAM_SHAPE = `{ "blocking": false, "blocking_reason": null, "strongest_argument_against": "...", "risks": ["..."] }`;
@@ -99,7 +102,10 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
   });
   const fetched: FetchedSource[] = research.fetched;
   for (const s of fetched) {
-    await db.query("insert into sources (project_id, url, title) values ($1, $2, $3) on conflict (project_id, url) do nothing", [projectId, s.url, s.title]);
+    await db.query(
+      "insert into sources (project_id, url, title, content) values ($1, $2, $3, $4) on conflict (project_id, url) do update set content = coalesce(excluded.content, sources.content)",
+      [projectId, s.url, s.title, s.text],
+    );
   }
 
   // 2. Synthèse structurée.
@@ -113,7 +119,7 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
   });
 
   // 3. Vérification déterministe des sources.
-  const dossier = verifyDossier(draft, fetched.map((s) => s.url));
+  const dossier = verifyDossier(draft, fetched);
 
   // 4. Red Team.
   const redTeam: RedTeam = await structuredCall(deps, redTeamSchema, {
@@ -153,7 +159,8 @@ function p1Summary(project: Project, d: ReturnType<typeof verifyDossier>, r: Red
     "",
     `Contre-argument : ${r.strongest_argument_against.slice(0, 300)}`,
     "",
-    `Preuves : ${d.claims.length} affirmation(s) sourcée(s), ${d.verification.claims_removed} retirée(s) faute de source.`,
+    `Voie : ${d.golden_path === "afrique" ? "Afrique (PWA + mobile money)" : "Europe (web + Stripe)"}`,
+    `Preuves : ${d.claims.length} citation(s) vérifiée(s) mot pour mot, ${d.verification.claims_removed + d.verification.claims_quote_mismatch} retirée(s).`,
     `Dossier complet : /dossier ${project.slug}`,
   ].join("\n");
 }

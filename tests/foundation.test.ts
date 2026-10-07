@@ -137,7 +137,7 @@ describe("budget, arrêt d'urgence et journal des appels IA", () => {
       research: { maxSearches: 3, maxFetches: 3 }, reserveUsd: 1,
     });
     expect(api.calls).toBe(2);
-    expect(res.fetched).toEqual([{ url: "https://exemple.sn/etude", title: "Étude" }]);
+    expect(res.fetched).toEqual([{ url: "https://exemple.sn/etude", title: "Étude", text: "x" }]);
     expect(res.text).toBe("fini");
   });
 

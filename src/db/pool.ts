@@ -10,5 +10,6 @@ export function createPool(connectionString: string): Db {
   const pool = new pg.Pool({ connectionString, max: 5 });
   // Une connexion inactive coupée (redémarrage de la base) ne doit pas faire tomber l'usine : le pool se reconnecte.
   pool.on("error", (err) => process.stderr.write(`[db] connexion inactive perdue : ${err.message}\n`));
+  pool.on("connect", (client) => client.on("error", (err) => process.stderr.write(`[db] connexion perdue : ${err.message}\n`)));
   return pool;
 }

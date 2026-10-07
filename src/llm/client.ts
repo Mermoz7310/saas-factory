@@ -17,7 +17,10 @@ export type LlmRequest = {
   reserveUsd?: number;
 };
 
-export type FetchedSource = { url: string; title: string | null };
+/** Page réellement lue par l'agent. `text` = contenu brut (null pour un PDF ou un échec de lecture). */
+export type FetchedSource = { url: string; title: string | null; text: string | null };
+
+const MAX_PAGE_TEXT = 300_000;
 
 export type LlmResult = { text: string; fetched: FetchedSource[]; costUsd: number };
 
@@ -35,7 +38,8 @@ export function extractFetched(content: Anthropic.Messages.ContentBlock[]): Fetc
   const out: FetchedSource[] = [];
   for (const block of content) {
     if (block.type === "web_fetch_tool_result" && block.content.type === "web_fetch_result") {
-      out.push({ url: block.content.url, title: block.content.content.title ?? null });
+      const doc = block.content.content;
+      out.push({ url: block.content.url, title: doc.title ?? null, text: doc.source.type === "text" ? doc.source.data.slice(0, MAX_PAGE_TEXT) : null });
     }
   }
   return out;

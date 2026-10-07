@@ -17,6 +17,12 @@ const A = "https://www.exemple.sn/enquete-ateliers";
 const B = "https://forum.exemple.com/tailleurs/123";
 const C = "https://concurrent.exemple.com/tarifs";
 
+const PAGES = [
+  { url: A, title: "Enquête", text: "Résultats.\nSelon notre enquête, 60 % des ateliers notent encore les mesures de leurs clients sur papier." },
+  { url: B, title: "Forum", text: "Message de Moussa : j’ai encore perdu le cahier avec les mesures de mes clientes, c’est la troisième fois." },
+  { url: C, title: "Tarifs", text: "Offre Atelier : 5\u00a0000 FCFA par mois, sans engagement." },
+];
+
 function draft(overrides: Partial<DossierDraft> = {}): DossierDraft {
   const crit = (score: number, urls: string[]) => ({ score, justification: "Justification suffisamment longue.", source_urls: urls });
   return {
@@ -31,10 +37,10 @@ function draft(overrides: Partial<DossierDraft> = {}): DossierDraft {
     price_hypothesis: { amount: 5000, currency: "XOF", period: "mois", rationale: "Aligné sur le concurrent principal." },
     mvp_features: ["Clients", "Mesures", "Commandes"],
     claims: [
-      { text: "60 % des ateliers notent les mesures sur papier.", source_url: A },
-      { text: "Des tailleurs se plaignent de mesures perdues.", source_url: `${B}/` },
-      { text: "AppA coûte 5 000 FCFA par mois.", source_url: `${C}#prix` },
-      { text: "Affirmation inventée sans page ouverte.", source_url: "https://invente.com/x" },
+      { text: "60 % des ateliers notent les mesures sur papier.", source_url: A, quote: "60 % des ateliers notent encore les mesures de leurs clients sur papier" },
+      { text: "Des tailleurs se plaignent de mesures perdues.", source_url: `${B}/`, quote: "J'ai encore perdu le cahier avec les mesures de mes clientes" },
+      { text: "AppA coûte 5 000 FCFA par mois.", source_url: `${C}#prix`, quote: "Offre Atelier : 5 000 FCFA par mois" },
+      { text: "Affirmation inventée sans page ouverte.", source_url: "https://invente.com/x", quote: "citation d'une page jamais ouverte par l'agent" },
     ],
     scores: {
       pain: crit(4, [A]),
@@ -43,7 +49,7 @@ function draft(overrides: Partial<DossierDraft> = {}): DossierDraft {
       acquisition: crit(3, []),
       feasibility: crit(5, [A]),
     },
-    fits_golden_path: true,
+    golden_path: "afrique",
     golden_path_reason: "SaaS web multi-ateliers.",
     ...overrides,
   };
@@ -58,14 +64,33 @@ const redTeam = (blocking = false): RedTeam => ({
 
 describe("vérification déterministe des sources", () => {
   it("supprime les affirmations dont la page n'a pas été ouverte, signale les concurrents non vérifiés, plafonne les notes sans preuve", () => {
-    const v = verifyDossier(draft(), [A, B, C]);
+    const v = verifyDossier(draft(), PAGES);
     expect(v.claims.map((c) => c.source_url)).toEqual([A, `${B}/`, `${C}#prix`]);
     expect(v.verification.claims_removed).toBe(1);
+    expect(v.verification.claims_quote_mismatch).toBe(0);
     expect(v.verification.competitors_unverified).toEqual(["AppFantome"]);
     expect(v.scores.willingness_to_pay.score).toBe(2);
     expect(v.scores.acquisition.score).toBe(2);
     expect(v.verification.scores_capped).toEqual(["willingness_to_pay", "acquisition"]);
     expect(v.total_score).toBe((4 + 5 + 2 + 2 + 5) * 4);
+  });
+
+  it("supprime une affirmation dont la citation est reformulée ou absente de la page", () => {
+    const d = draft({
+      claims: [
+        { text: "Reformulé", source_url: A, quote: "60 pour cent des ateliers utilisent du papier pour les mesures" },
+        { text: "Exact malgré la casse et les espaces", source_url: A, quote: "60 %   DES ATELIERS notent encore les mesures" },
+      ],
+    });
+    const v = verifyDossier(d, PAGES);
+    expect(v.claims.map((c) => c.text)).toEqual(["Exact malgré la casse et les espaces"]);
+    expect(v.verification.claims_quote_mismatch).toBe(1);
+  });
+
+  it("une page illisible (PDF) ne peut pas servir de preuve citée, mais compte pour les notes", () => {
+    const v = verifyDossier(draft(), [{ url: A, text: null }, ...PAGES.slice(1)]);
+    expect(v.claims.map((c) => c.source_url)).not.toContain(A);
+    expect(v.scores.pain.score).toBe(4);
   });
 
   it("sans aucune page ouverte, tout est retiré et l'idée est archivée faute de preuves", () => {
@@ -75,9 +100,9 @@ describe("vérification déterministe des sources", () => {
   });
 
   it("décision : hors périmètre ou motif bloquant → archivé ; sinon validation P1", () => {
-    expect(decide(verifyDossier(draft({ fits_golden_path: false }), [A, B, C]), redTeam()).next).toBe("ARCHIVED");
-    expect(decide(verifyDossier(draft(), [A, B, C]), redTeam(true)).next).toBe("ARCHIVED");
-    expect(decide(verifyDossier(draft(), [A, B, C]), redTeam()).next).toBe("AWAITING_P1");
+    expect(decide(verifyDossier(draft({ golden_path: "aucune" }), PAGES), redTeam()).next).toBe("ARCHIVED");
+    expect(decide(verifyDossier(draft(), PAGES), redTeam(true)).next).toBe("ARCHIVED");
+    expect(decide(verifyDossier(draft(), PAGES), redTeam()).next).toBe("AWAITING_P1");
   });
 });
 
@@ -95,7 +120,7 @@ class ScriptedLlm implements Llm {
 }
 
 const json = (o: unknown) => "```json\n" + JSON.stringify(o) + "\n```";
-const researchOk = { text: "notes", fetched: [{ url: A, title: "Enquête" }, { url: B, title: "Forum" }, { url: C, title: "Tarifs" }] };
+const researchOk = { text: "notes", fetched: PAGES };
 
 describe("étape 1a de bout en bout (modèle simulé)", () => {
   it("produit un dossier sourcé, l'enregistre et demande la validation P1 avec boutons", async () => {
@@ -112,9 +137,12 @@ describe("étape 1a de bout en bout (modèle simulé)", () => {
 
     const dossier = await latestArtifact(db, p.id, "dossier");
     expect(dossier?.markdown).toContain("Score : 72/100");
+    expect(dossier?.markdown).toContain("voie : Afrique");
+    expect(dossier?.markdown).toContain("« Offre Atelier : 5 000 FCFA par mois »");
     expect(dossier?.markdown).not.toContain("invente.com");
-    const sources = await db.query("select url from sources where project_id = $1 order by url", [p.id]);
+    const sources = await db.query("select url, content is not null as has_text from sources where project_id = $1 order by url", [p.id]);
     expect(sources.rows.map((r) => r.url)).toEqual([C, B, A].sort());
+    expect(sources.rows.every((r) => r.has_text)).toBe(true);
 
     const last = notifier.sent.at(-1)!;
     expect(last.text).toContain("Porte P1");
@@ -128,7 +156,7 @@ describe("étape 1a de bout en bout (modèle simulé)", () => {
     const notifier = new NullNotifier();
     const llm = new ScriptedLlm({
       research: [researchOk],
-      synthesis: [{ text: json(draft({ fits_golden_path: false, golden_path_reason: "Application mobile hors ligne." })) }],
+      synthesis: [{ text: json(draft({ golden_path: "aucune", golden_path_reason: "Application mobile hors ligne." })) }],
       red_team: [{ text: json(redTeam()) }],
     });
     expect(await runDiscovery({ db, llm, notifier }, p.id)).toBe("ARCHIVED");
