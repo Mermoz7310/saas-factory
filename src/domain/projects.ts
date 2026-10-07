@@ -1,3 +1,4 @@
+import type pg from "pg";
 import type { Db } from "../db/pool.ts";
 import { canTransition, type State } from "./states.ts";
 
@@ -49,12 +50,11 @@ export async function getProject(db: Db, idOrSlug: string): Promise<Project | nu
   return rows[0] ?? null;
 }
 
-/**
- * Change l'état d'un projet de façon atomique : refuse toute transition non prévue
- * et échoue si l'état a changé entre-temps (deux traitements concurrents ne peuvent pas avancer le même projet).
- */
-export async function transition(
-  db: Db,
+type Queryable = Pick<pg.PoolClient, "query">;
+
+/** Variante à utiliser dans une transaction déjà ouverte. */
+export async function transitionIn(
+  client: Queryable,
   projectId: string,
   from: State,
   to: State,
@@ -62,28 +62,42 @@ export async function transition(
   reason?: string,
 ): Promise<void> {
   if (!canTransition(from, to)) throw new TransitionError(`Transition interdite : ${from} → ${to}`);
+  const res = await client.query(
+    "update projects set state = $3, state_reason = $4, updated_at = now() where id = $1 and state = $2",
+    [projectId, from, to, reason ?? null],
+  );
+  if (res.rowCount !== 1) throw new TransitionError(`État inattendu : le projet n'est plus en ${from}`);
+  await client.query("insert into project_events (project_id, from_state, to_state, actor, reason) values ($1, $2, $3, $4, $5)", [
+    projectId,
+    from,
+    to,
+    actor,
+    reason ?? null,
+  ]);
+}
+
+/** Exécute `fn` dans une transaction. */
+export async function inTransaction<T>(db: Db, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await db.connect();
   try {
     await client.query("begin");
-    const res = await client.query(
-      "update projects set state = $3, state_reason = $4, updated_at = now() where id = $1 and state = $2",
-      [projectId, from, to, reason ?? null],
-    );
-    if (res.rowCount !== 1) throw new TransitionError(`État inattendu : le projet n'est plus en ${from}`);
-    await client.query("insert into project_events (project_id, from_state, to_state, actor, reason) values ($1, $2, $3, $4, $5)", [
-      projectId,
-      from,
-      to,
-      actor,
-      reason ?? null,
-    ]);
+    const result = await fn(client);
     await client.query("commit");
+    return result;
   } catch (error) {
     await client.query("rollback");
     throw error;
   } finally {
     client.release();
   }
+}
+
+/**
+ * Change l'état d'un projet de façon atomique : refuse toute transition non prévue
+ * et échoue si l'état a changé entre-temps (deux traitements concurrents ne peuvent pas avancer le même projet).
+ */
+export async function transition(db: Db, projectId: string, from: State, to: State, actor: "system" | "user", reason?: string): Promise<void> {
+  await inTransaction(db, (c) => transitionIn(c, projectId, from, to, actor, reason));
 }
 
 export async function listActiveProjects(db: Db): Promise<Project[]> {
