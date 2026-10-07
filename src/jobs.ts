@@ -26,6 +26,9 @@ export function explain(error: unknown): string {
   if (error instanceof BudgetExceeded) return `💸 ${error.message}. Augmente le budget ou attends demain, puis /relancer.`;
   if (error instanceof FactoryPaused) return "⏸️ Usine en pause : tape /reprendre puis /relancer.";
   const msg = error instanceof Error ? error.message : String(error);
+  if (msg.includes("anthropic-workspace-id")) {
+    return "🔑 Ta clé API demande un espace de travail : ajoute ANTHROPIC_WORKSPACE_ID=wrkspc_… dans le fichier .env du serveur (voir deploy/INSTALL.md), puis /relancer.";
+  }
   return `⚠️ ${msg.slice(0, 300)}`;
 }
 

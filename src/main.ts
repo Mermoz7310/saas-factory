@@ -24,9 +24,14 @@ else if (!config.TELEGRAM_OWNER_ID) log.warn("TELEGRAM_OWNER_ID absent : envoie 
 
 let runner: Awaited<ReturnType<typeof run>> | null = null;
 if (config.ANTHROPIC_API_KEY) {
-  const llm = new ClaudeLlm(db, new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, maxRetries: 3, timeout: 10 * 60_000 }).messages);
+  const llm = new ClaudeLlm(db, new Anthropic({
+      apiKey: config.ANTHROPIC_API_KEY,
+      maxRetries: 3,
+      timeout: 10 * 60_000,
+      ...(config.ANTHROPIC_WORKSPACE_ID ? { defaultHeaders: { "anthropic-workspace-id": config.ANTHROPIC_WORKSPACE_ID } } : {}),
+    }).messages);
   runner = await run({ pgPool: db, concurrency: config.WORKER_CONCURRENCY, noHandleSignals: true, taskList: makeTaskList({ db, llm, notifier }) });
-  log.info("travailleur démarré");
+  log.info(config.ANTHROPIC_WORKSPACE_ID ? `travailleur démarré (espace ${config.ANTHROPIC_WORKSPACE_ID})` : "travailleur démarré");
 } else {
   log.warn("ANTHROPIC_API_KEY absente : les idées sont enregistrées mais aucune recherche ne démarre");
 }

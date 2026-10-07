@@ -98,3 +98,10 @@ describe("traitement en file (graphile-worker réel)", () => {
     expect(rows[0].n).toBe(1);
   });
 });
+
+describe("messages d'erreur", () => {
+  it("une clé qui exige un espace de travail donne une consigne claire", async () => {
+    const { explain } = await import("../src/jobs.ts");
+    expect(explain(new Error('400 {"message":"This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header"}'))).toContain("ANTHROPIC_WORKSPACE_ID");
+  });
+});

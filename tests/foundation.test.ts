@@ -191,3 +191,11 @@ describe("utilitaires", () => {
     expect(() => loadConfig({ DATABASE_URL: "postgresql://x", ANTHROPIC_API_KEY: "pk-xxx" })).toThrow();
   });
 });
+
+describe("espace de travail Anthropic", () => {
+  it("accepte un identifiant wrkspc_ et refuse une valeur mal formée", () => {
+    expect(loadConfig({ DATABASE_URL: "postgresql://x", ANTHROPIC_WORKSPACE_ID: "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ" }).ANTHROPIC_WORKSPACE_ID).toBe("wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ");
+    expect(() => loadConfig({ DATABASE_URL: "postgresql://x", ANTHROPIC_WORKSPACE_ID: "saas-factory" })).toThrow(/wrkspc_/);
+    expect(loadConfig({ DATABASE_URL: "postgresql://x", ANTHROPIC_WORKSPACE_ID: "" }).ANTHROPIC_WORKSPACE_ID).toBeUndefined();
+  });
+});

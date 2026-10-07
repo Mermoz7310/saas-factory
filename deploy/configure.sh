@@ -10,15 +10,18 @@ fi
 
 read -r -s -p "Clé API Anthropic (sk-ant-...) : " ANTHROPIC_API_KEY; echo
 read -r -s -p "Jeton du bot Telegram (donné par @BotFather) : " TELEGRAM_BOT_TOKEN; echo
+read -r -p "Identifiant de l'espace de travail Anthropic (wrkspc_..., laisse vide si ta clé n'en demande pas) : " ANTHROPIC_WORKSPACE_ID
 read -r -p "Ton identifiant Telegram (laisse vide si tu ne l'as pas encore) : " TELEGRAM_OWNER_ID
 
 case "$ANTHROPIC_API_KEY" in sk-ant-*) ;; *) echo "Clé Anthropic invalide (doit commencer par sk-ant-)"; exit 1;; esac
+[ -z "$ANTHROPIC_WORKSPACE_ID" ] || [[ "$ANTHROPIC_WORKSPACE_ID" =~ ^wrkspc_[A-Za-z0-9]+$ ]] || { echo "Identifiant d'espace invalide (wrkspc_...)"; exit 1; }
 [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || { echo "Jeton Telegram invalide"; exit 1; }
 
 umask 077
 cat > .env <<EOF
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TELEGRAM_OWNER_ID=${TELEGRAM_OWNER_ID}
 WORKER_CONCURRENCY=1
