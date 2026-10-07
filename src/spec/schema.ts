@@ -3,6 +3,9 @@ import { z } from "zod";
 /** Tables du gabarit : un SaaS ne peut pas les redéfinir. */
 export const TEMPLATE_TABLES = ["profiles", "organizations", "memberships", "invitations", "subscriptions", "audit_logs"] as const;
 
+/** Chemins déjà utilisés par le gabarit sous /app/<slug>. */
+export const RESERVED_SEGMENTS = ["members", "settings", "billing", "audit", "onboarding", "invite", "new"];
+
 /** Mots réservés SQL ou noms de colonnes ajoutées automatiquement. */
 const RESERVED = new Set([
   "all", "and", "any", "as", "asc", "between", "by", "case", "check", "column", "constraint", "create", "default", "delete",
@@ -17,32 +20,68 @@ const ident = z
   .regex(/^[a-z][a-z0-9_]{1,39}$/, "identifiant snake_case de 2 à 40 caractères")
   .refine((v) => !RESERVED.has(v), "mot réservé");
 
+const enumValue = z.string().regex(/^[a-z][a-z0-9_]{0,29}$/, "valeur d'enum en snake_case");
+const segment = z.string().regex(/^[a-z][a-z0-9-]{1,29}$/, "segment d'URL en kebab-case");
+const uiLabel = z.string().min(1).max(60);
+
 export const FIELD_TYPES = ["text", "long_text", "integer", "decimal", "money_xof", "money_eur", "boolean", "date", "datetime", "enum", "ref"] as const;
+const NUMERIC_TYPES = new Set(["integer", "decimal", "money_xof", "money_eur"]);
 
 export const fieldSchema = z
   .object({
     name: ident,
-    label: z.string().min(1).max(60),
+    /** Libellé EXACT du champ dans l'interface (contrat partagé par les tests et le code). */
+    label: uiLabel,
     type: z.enum(FIELD_TYPES),
     required: z.boolean(),
-    /** Pour enum : valeurs autorisées (snake_case). */
-    values: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,29}$/)).min(2).max(12).optional(),
+    /** Pour enum : valeur technique + libellé affiché (option du menu). */
+    values: z.array(z.object({ value: enumValue, label: uiLabel })).min(2).max(12).optional(),
     /** Pour ref : table cible (entité de la spec). */
     ref: ident.optional(),
+    /** Pour un nombre : valeur minimale (ex. 1 pour un montant strictement positif). */
+    min: z.number().int().min(0).optional(),
   })
   .superRefine((f, ctx) => {
     if (f.type === "enum" && !f.values) ctx.addIssue({ code: "custom", message: `${f.name} : un enum doit lister ses valeurs` });
+    if (f.type !== "enum" && f.values) ctx.addIssue({ code: "custom", message: `${f.name} : "values" réservé aux enums` });
     if (f.type === "ref" && !f.ref) ctx.addIssue({ code: "custom", message: `${f.name} : une ref doit nommer sa table cible` });
     if (f.type === "ref" && !f.name.endsWith("_id")) ctx.addIssue({ code: "custom", message: `${f.name} : une ref doit finir par _id` });
+    if (f.min !== undefined && !NUMERIC_TYPES.has(f.type)) ctx.addIssue({ code: "custom", message: `${f.name} : "min" réservé aux nombres` });
   });
+
+/** Règles garanties PAR LA BASE (générées en SQL par le code). */
+export const constraintSchema = z.discriminatedUnion("kind", [
+  /** Unicité dans l'organisation, éventuellement limitée (ex. un seul contrat actif par véhicule). */
+  z.object({ kind: z.literal("unique"), fields: z.array(ident).min(1).max(3), when: z.object({ field: ident, equals: enumValue }).optional(), message: uiLabel }),
+  /** Champ obligatoire quand un autre champ prend certaines valeurs (ex. référence obligatoire si paiement Wave). */
+  z.object({ kind: z.literal("required_when"), field: ident, when: z.object({ field: ident, in: z.array(enumValue).min(1).max(8) }), message: uiLabel }),
+  /** Date de fin postérieure ou égale à la date de début. */
+  z.object({ kind: z.literal("date_order"), start: ident, end: ident, message: uiLabel }),
+]);
+export type Constraint = z.infer<typeof constraintSchema>;
 
 export const entitySchema = z.object({
   name: ident.refine((v) => !(TEMPLATE_TABLES as readonly string[]).includes(v), "nom réservé au gabarit"),
-  label: z.string().min(1).max(60),
-  module: z.string().regex(/^[a-z][a-z0-9-]{1,29}$/, "module en kebab-case"),
+  label: uiLabel,
+  /** Page qui contient la liste et le formulaire : /app/<slug>/<module>. Plusieurs entités peuvent partager une page. */
+  module: segment,
+  /** Champ texte affiché comme lien vers la fiche dans la liste. */
+  title_field: ident,
   fields: z.array(fieldSchema).min(1).max(20),
+  constraints: z.array(constraintSchema).max(6).default([]),
   /** Seuls admin/owner peuvent supprimer (sinon tout membre). */
   delete_requires_admin: z.boolean(),
+});
+
+/** Écran calculé (tableau de bord, impayés, rentabilité…) : route, éléments testables, libellés de filtres. */
+export const viewSchema = z.object({
+  name: z.string().min(2).max(60),
+  /** "" = accueil de l'organisation (/app/<slug>). */
+  route_segment: z.union([z.literal(""), segment]),
+  description: z.string().min(10).max(400),
+  testids: z.array(z.string().regex(/^[a-z][a-z0-9-]{1,40}$/)).min(1).max(8),
+  /** Libellés exacts des champs de filtre de cet écran (ex. "Mois"). */
+  labels: z.array(uiLabel).max(4).default([]),
 });
 
 const criterion = z.object({
@@ -71,8 +110,9 @@ export const specSchema = z.object({
   pricing: z.object({ amount: z.number().positive(), currency: z.enum(["XOF", "EUR"]), period: z.enum(["mois", "an"]), rationale: z.string().min(10).max(400) }),
   roles_mapping: z.string().min(10).max(400),
   entities: z.array(entitySchema).min(1).max(8),
+  views: z.array(viewSchema).max(6).default([]),
   stories: z.array(storySchema).min(1).max(10),
-  business_rules: z.array(z.string().min(10).max(300)).max(12),
+  business_rules: z.array(z.string().min(10).max(400)).max(12),
   out_of_scope: z.array(z.string().min(5).max(200)).max(10),
   prospecting: z.string().min(20).max(800),
 });
@@ -80,6 +120,7 @@ export const specSchema = z.object({
 export type Spec = z.infer<typeof specSchema>;
 export type Entity = z.infer<typeof entitySchema>;
 export type Field = z.infer<typeof fieldSchema>;
+export type View = z.infer<typeof viewSchema>;
 
 /** Contrôles de cohérence que le schéma seul ne peut pas exprimer. Renvoie la liste des problèmes (vide = OK). */
 export function checkSpec(spec: Spec): string[] {
@@ -89,15 +130,52 @@ export function checkSpec(spec: Spec): string[] {
   if (dup.length) problems.push(`Entités en double : ${[...new Set(dup)].join(", ")}`);
 
   for (const e of spec.entities) {
+    const byName = new Map(e.fields.map((f) => [f.name, f]));
     const fieldNames = e.fields.map((f) => f.name);
     const dupF = fieldNames.filter((n, i) => fieldNames.indexOf(n) !== i);
     if (dupF.length) problems.push(`${e.name} : champs en double (${dupF.join(", ")})`);
+    const labels = e.fields.map((f) => f.label);
+    const dupL = labels.filter((n, i) => labels.indexOf(n) !== i);
+    if (dupL.length) problems.push(`${e.name} : libellés en double (${dupL.join(", ")}) — chaque champ doit avoir un libellé unique`);
+
+    const title = byName.get(e.title_field);
+    if (!title || title.type !== "text" || !title.required) problems.push(`${e.name} : title_field doit être un champ texte obligatoire de l'entité`);
+
     for (const f of e.fields) {
       if (f.type === "ref" && f.ref && !names.includes(f.ref)) problems.push(`${e.name}.${f.name} pointe vers une entité inconnue « ${f.ref} »`);
       if (f.type === "ref" && f.ref === e.name) problems.push(`${e.name}.${f.name} : référence vers sa propre table non prise en charge`);
+      if (f.values) {
+        const vals = f.values.map((v) => v.value);
+        if (new Set(vals).size !== vals.length) problems.push(`${e.name}.${f.name} : valeurs d'enum en double`);
+      }
+    }
+
+    const enumHas = (field: string, value: string) => byName.get(field)?.values?.some((v) => v.value === value) ?? false;
+    for (const c of e.constraints) {
+      const where = `${e.name} (contrainte ${c.kind})`;
+      if (c.kind === "unique") {
+        for (const f of c.fields) if (!byName.has(f)) problems.push(`${where} : champ inconnu « ${f} »`);
+        if (c.when && !enumHas(c.when.field, c.when.equals)) problems.push(`${where} : « ${c.when.field} = ${c.when.equals} » n'est pas une valeur d'enum de l'entité`);
+      } else if (c.kind === "required_when") {
+        if (!byName.has(c.field)) problems.push(`${where} : champ inconnu « ${c.field} »`);
+        else if (byName.get(c.field)!.required) problems.push(`${where} : « ${c.field} » est déjà toujours obligatoire`);
+        for (const v of c.when.in) if (!enumHas(c.when.field, v)) problems.push(`${where} : « ${c.when.field} = ${v} » n'est pas une valeur d'enum de l'entité`);
+      } else {
+        const s = byName.get(c.start);
+        const en = byName.get(c.end);
+        if (!s || !en || !["date", "datetime"].includes(s.type) || s.type !== en.type) problems.push(`${where} : ${c.start} et ${c.end} doivent être deux dates de l'entité`);
+      }
     }
   }
   if (hasCycle(spec.entities)) problems.push("Références circulaires entre entités");
+
+  const modules = new Set(spec.entities.map((e) => e.module));
+  const segments = spec.views.map((v) => v.route_segment).filter((s) => s !== "");
+  for (const s of [...modules, ...segments]) if (RESERVED_SEGMENTS.includes(s)) problems.push(`Le chemin « ${s} » est réservé au gabarit`);
+  for (const s of segments) if (modules.has(s)) problems.push(`L'écran « ${s} » utilise le même chemin qu'une page d'entités`);
+  if (new Set(segments).size !== segments.length) problems.push("Deux écrans calculés ont le même chemin");
+  const crudIds = new Set(spec.entities.flatMap((e) => ["form", "list", "row", "empty", "edit-form"].map((k) => `${e.name}-${k}`)));
+  for (const v of spec.views) for (const t of v.testids) if (crudIds.has(t)) problems.push(`L'écran « ${v.name} » réutilise l'identifiant réservé « ${t} »`);
 
   const ids = spec.stories.map((s) => s.id);
   if (new Set(ids).size !== ids.length) problems.push("Identifiants de stories en double");

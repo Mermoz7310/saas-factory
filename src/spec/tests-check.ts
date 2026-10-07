@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { z } from "zod";
+import { contractVocabulary, type UiContract } from "./contract.ts";
 
 export const testFilesSchema = z.object({
   files: z
@@ -28,14 +29,32 @@ const FORBIDDEN: { re: RegExp; why: string }[] = [
   { re: /\bpage\.evaluate\s*\(/, why: "page.evaluate interdit : tester par l'interface comme un utilisateur" },
 ];
 
+/** Route d'un page.goto : les parties variables deviennent « * ». undefined = non analysable (ignorée). */
+function routePattern(arg: ts.Expression): string | undefined {
+  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) return arg.text;
+  if (ts.isTemplateExpression(arg)) return arg.head.text + arg.templateSpans.map((s) => `*${s.literal.text}`).join("");
+  return undefined;
+}
+
+const FIXED_ROUTES = [/^\/$/, /^\/login(?:\?.*)?$/, /^\/signup$/, /^\/app$/, /^\/app\/onboarding$/, /^\/admin$/, /^\/app\/[^/?#]+$/];
+
+function routeAllowed(route: string, segments: Set<string>): boolean {
+  const path = route.split("?")[0]!;
+  if (FIXED_ROUTES.some((re) => re.test(route) || re.test(path))) return true;
+  const m = /^\/app\/[^/]+\/([a-z0-9-]+)$/.exec(path);
+  return !!m && segments.has(m[1]!);
+}
+
 /**
  * Contrôles déterministes des tests d'acceptation générés :
  * syntaxe TypeScript valide, imports autorisés, aucune pratique interdite,
+ * conformité au contrat d'interface (routes, data-testid, libellés),
  * et chaque story Sx couverte par au moins un test dont le titre commence par « Sx — ».
  */
-export function checkTestFiles(files: TestFiles["files"], storyIds: string[]): string[] {
+export function checkTestFiles(files: TestFiles["files"], storyIds: string[], contract?: UiContract): string[] {
   const problems: string[] = [];
   const titles: string[] = [];
+  const vocab = contract ? contractVocabulary(contract) : undefined;
 
   for (const f of files) {
     if (TEMPLATE_TEST_FILES.has(f.path)) problems.push(`${f.path} : fichier du gabarit, ne pas le remplacer`);
@@ -56,6 +75,28 @@ export function checkTestFiles(files: TestFiles["files"], storyIds: string[]): s
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "test") {
         const first = node.arguments[0];
         if (first && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first))) titles.push(first.text);
+      }
+      if (vocab && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const method = node.expression.name.text;
+        const arg = node.arguments[0];
+        const lit = arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) ? arg.text : undefined;
+        if (method === "getByTestId" && lit !== undefined && !vocab.testids.has(lit)) {
+          problems.push(`${f.path} : data-testid « ${lit} » absent du contrat d'interface`);
+        }
+        if (method === "getByLabel" && lit !== undefined && !vocab.labels.has(lit)) {
+          problems.push(`${f.path} : libellé « ${lit} » absent du contrat d'interface`);
+        }
+        if (method === "goto" && arg) {
+          const route = routePattern(arg);
+          if (route !== undefined && !routeAllowed(route, vocab.segments)) problems.push(`${f.path} : route « ${route} » absente du contrat d'interface`);
+        }
+        if (method === "selectOption" && arg && ts.isObjectLiteralExpression(arg)) {
+          for (const p of arg.properties) {
+            if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "value") {
+              problems.push(`${f.path} : selectOption({ value }) interdit, utiliser selectOption({ label: "…" })`);
+            }
+          }
+        }
       }
       node.forEachChild(visit);
     };

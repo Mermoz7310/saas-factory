@@ -18,27 +18,52 @@ export function validSpec(overrides: Partial<Spec> = {}): Spec {
       {
         name: "customers",
         label: "Clients",
-        module: "customers",
+        module: "clients",
+        title_field: "full_name",
         delete_requires_admin: true,
         fields: [
           { name: "full_name", label: "Nom", type: "text", required: true },
           { name: "phone", label: "Téléphone", type: "text", required: false },
         ],
+        constraints: [{ kind: "unique", fields: ["phone"], message: "Ce numéro est déjà enregistré." }],
       },
       {
         name: "orders",
         label: "Commandes",
-        module: "orders",
+        module: "commandes",
+        title_field: "description",
         delete_requires_admin: true,
         fields: [
           { name: "customer_id", label: "Client", type: "ref", required: true, ref: "customers" },
           { name: "description", label: "Description", type: "text", required: true },
-          { name: "total", label: "Prix total (FCFA)", type: "money_xof", required: true },
+          { name: "total", label: "Prix total (FCFA)", type: "money_xof", required: true, min: 1 },
+          { name: "ordered_on", label: "Date de commande", type: "date", required: true },
           { name: "due_on", label: "Livraison prévue", type: "date", required: true },
-          { name: "status", label: "Statut", type: "enum", required: true, values: ["received", "in_progress", "ready", "delivered"] },
+          {
+            name: "status",
+            label: "Statut",
+            type: "enum",
+            required: true,
+            values: [
+              { value: "received", label: "Reçue" },
+              { value: "in_progress", label: "En cours" },
+              { value: "ready", label: "Prête" },
+              { value: "delivered", label: "Livrée" },
+            ],
+          },
+          { name: "deposit_method", label: "Mode d'acompte", type: "enum", required: false, values: [{ value: "cash", label: "Espèces" }, { value: "wave", label: "Wave" }] },
+          { name: "deposit_ref", label: "Référence Wave", type: "text", required: false },
           { name: "urgent", label: "Urgent", type: "boolean", required: false },
         ],
+        constraints: [
+          { kind: "date_order", start: "ordered_on", end: "due_on", message: "La livraison ne peut pas précéder la commande." },
+          { kind: "required_when", field: "deposit_ref", when: { field: "deposit_method", in: ["wave"] }, message: "La référence Wave est obligatoire." },
+          { kind: "unique", fields: ["customer_id"], when: { field: "status", equals: "in_progress" }, message: "Ce client a déjà une commande en cours." },
+        ],
       },
+    ],
+    views: [
+      { name: "À livrer", route_segment: "a-livrer", description: "Commandes non livrées dont la livraison prévue est aujourd'hui ou avant (bornes incluses), triées par date.", testids: ["due-list", "due-count"], labels: [] },
     ],
     stories: [
       {
@@ -76,7 +101,7 @@ async function newWorkspace(page: Page): Promise<string> {
 
 test("S1 — Étant donné un atelier, quand j'ajoute un client, alors il apparaît", async ({ page }) => {
   const slug = await newWorkspace(page);
-  await page.goto(\`/app/\${slug}/customers\`);
+  await page.goto(\`/app/\${slug}/clients\`);
   await page.getByTestId("customers-form").getByLabel("Nom").fill("Aminata Sow");
   await page.getByRole("button", { name: "Ajouter" }).click();
   await expect(page.getByTestId("customers-list")).toContainText("Aminata Sow");
@@ -84,8 +109,11 @@ test("S1 — Étant donné un atelier, quand j'ajoute un client, alors il appara
 
 test("S2 — Étant donné un client, quand je crée une commande, alors elle apparaît", async ({ page }) => {
   const slug = await newWorkspace(page);
-  await page.goto(\`/app/\${slug}/orders\`);
+  await page.goto(\`/app/\${slug}/commandes\`);
   await expect(page.getByTestId("orders-empty")).toBeVisible();
+  await page.getByTestId("orders-form").getByLabel("Statut").selectOption({ label: "Reçue" });
+  await page.goto(\`/app/\${slug}/a-livrer\`);
+  await expect(page.getByTestId("due-count")).toHaveText("0");
 });
 `;
 

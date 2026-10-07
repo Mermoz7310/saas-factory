@@ -4,22 +4,32 @@ import { requestApproval } from "../domain/approvals.ts";
 import { getProject, latestArtifact, saveArtifact, transition, type Project } from "../domain/projects.ts";
 import { extractJson, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
+import { buildUiContract, renderContract, type UiContract } from "../spec/contract.ts";
 import { checkSpec, specSchema, topoOrder, type Spec } from "../spec/schema.ts";
 import { generateMigration, migrationFileName } from "../spec/sql.ts";
 import { checkTestFiles, type TestFiles } from "../spec/tests-check.ts";
 import { shorten } from "./dossier.ts";
 
-export const SPEC_PROMPT_VERSION = "spec-v2";
+export const SPEC_PROMPT_VERSION = "spec-v3";
 
 const SPEC_SYSTEM = `Tu es le Product Manager d'une usine à SaaS. Tu travailles en français.
 Tu transformes un dossier d'opportunité validé en spécification de MVP, construite sur un gabarit existant qui fournit DÉJÀ :
-comptes, organisations, rôles owner/admin/member, invitations, journal d'audit, abonnement (Stripe en Europe ; mobile money en Afrique).
+comptes, organisations, rôles owner/admin/member, invitations, journal d'audit (toute suppression y est tracée automatiquement), abonnement (Stripe en Europe ; mobile money en Afrique).
 Ne respécifie jamais ces fonctions : spécifie uniquement le métier.
 
 Règles :
-- 10 user stories AU MAXIMUM, numérotées S1, S2… dans l'ordre. Chaque story : 1 à 5 critères d'acceptation « Étant donné / Quand / Alors », concrets et vérifiables dans un navigateur.
-- 8 entités au maximum. Noms de tables en snake_case au pluriel (ex. "customers"). Pas de colonnes id, org_id, created_at, created_by, updated_at : elles sont ajoutées automatiquement.
-- Types de champs : text (≤200 car.), long_text, integer, decimal, money_xof (FCFA entiers), money_eur, boolean, date, datetime, enum (avec "values"), ref (avec "ref" = table cible, nom finissant par _id).
+- 10 user stories AU MAXIMUM, numérotées S1, S2… dans l'ordre. Chaque story : 1 à 5 critères d'acceptation « Étant donné / Quand / Alors », concrets et vérifiables dans un navigateur, avec des valeurs chiffrées.
+- 8 entités au maximum. Noms de tables en snake_case au pluriel anglais (ex. "customers"). Pas de colonnes id, org_id, created_at, created_by, updated_at : elles sont ajoutées automatiquement.
+- "module" = segment d'URL en français kebab-case de la page qui contient liste + formulaire (ex. "clients"). Plusieurs entités peuvent partager une page. Interdits : members, settings, billing, audit, onboarding, invite, new.
+- "label" de chaque champ = libellé EXACT affiché dans l'interface, unique dans l'entité. "title_field" = champ texte obligatoire qui identifie une ligne (affiché dans les listes et les menus de référence).
+- Types : text (≤200 car.), long_text, integer, decimal, money_xof (FCFA entiers), money_eur, boolean, date, datetime, enum ("values" = [{ "value": "snake_case", "label": "Libellé affiché" }]), ref ("ref" = table cible, nom finissant par _id). "min" (facultatif, nombres) : ex. 1 pour un montant strictement positif.
+- Toute règle qui peut être garantie par la base DOIT être dans "constraints" de l'entité (sinon elle ne sera pas garantie) :
+  · {"kind":"unique","fields":[...],"when":{"field":"status","equals":"active"},"message":"..."} — unicité dans l'organisation, "when" facultatif (ex. un seul contrat actif par véhicule) ;
+  · {"kind":"required_when","field":"reference","when":{"field":"method","in":["wave"]},"message":"..."} — champ facultatif devenu obligatoire ;
+  · {"kind":"date_order","start":"start_date","end":"end_date","message":"..."}.
+  "message" = texte EXACT affiché à l'utilisateur quand la règle est violée.
+- "views" : écrans calculés (impayés, tableau de bord, rentabilité…) : route_segment (kebab-case, "" = accueil de l'organisation), description PRÉCISE du calcul, data-testid des éléments à vérifier, libellés des filtres.
+- Toute règle de calcul est sans ambiguïté : bornes incluses ou exclues, jour de référence (aujourd'hui inclus ?), arrondis, ordre de tri, que faire des cas limites (jour de repos, contrat terminé, montant partiel). Donne un exemple chiffré.
 - Chaque entité est utilisée par au moins une story ; chaque story liste les entités qu'elle touche.
 - 3 variantes du produit, exactement une "chosen": true, et la justification du choix.
 - Le MVP doit être construisible en quelques jours : en cas de doute, retire plutôt que d'ajouter.
@@ -31,10 +41,17 @@ const SPEC_SHAPE = `{
   "variant_rationale": "...",
   "pricing": { "amount": 5000, "currency": "XOF | EUR", "period": "mois | an", "rationale": "..." },
   "roles_mapping": "comment les rôles métier correspondent à owner/admin/member",
-  "entities": [{ "name": "customers", "label": "Clients", "module": "customers", "delete_requires_admin": true,
+  "entities": [{ "name": "customers", "label": "Clients", "module": "clients", "title_field": "full_name", "delete_requires_admin": true,
     "fields": [{ "name": "full_name", "label": "Nom", "type": "text", "required": true },
-               { "name": "status", "label": "Statut", "type": "enum", "required": true, "values": ["active", "archived"] },
-               { "name": "customer_id", "label": "Client", "type": "ref", "required": true, "ref": "customers" }] }],
+               { "name": "phone", "label": "Téléphone", "type": "text", "required": true },
+               { "name": "status", "label": "Statut", "type": "enum", "required": true, "values": [{ "value": "active", "label": "Actif" }, { "value": "archived", "label": "Archivé" }] }],
+    "constraints": [{ "kind": "unique", "fields": ["phone"], "message": "Ce numéro de téléphone est déjà enregistré." }] },
+   { "name": "orders", "label": "Commandes", "module": "commandes", "title_field": "title", "delete_requires_admin": false,
+    "fields": [{ "name": "title", "label": "Intitulé", "type": "text", "required": true },
+               { "name": "customer_id", "label": "Client", "type": "ref", "required": true, "ref": "customers" },
+               { "name": "amount_xof", "label": "Montant (FCFA)", "type": "money_xof", "required": true, "min": 1 }],
+    "constraints": [] }],
+  "views": [{ "name": "Impayés", "route_segment": "impayes", "description": "calcul exact…", "testids": ["unpaid-total", "unpaid-list"], "labels": ["Mois"] }],
   "stories": [{ "id": "S1", "as": "gérant", "want": "...", "so_that": "...", "entities": ["customers"],
     "acceptance": [{ "given": "...", "when": "...", "then": "..." }] }],
   "business_rules": ["..."], "out_of_scope": ["..."], "prospecting": "où et comment trouver les 10 premiers clients"
@@ -43,13 +60,15 @@ const SPEC_SHAPE = `{
 const TEST_SYSTEM = `Tu es l'agent QA d'une usine à SaaS. Tu écris les tests d'acceptation Playwright AVANT que le code existe.
 Ces tests sont le contrat : un autre agent devra écrire l'interface pour les faire passer, sans pouvoir les modifier.
 
-Conventions obligatoires de l'interface (que ton test impose) :
+Le CONTRAT D'INTERFACE fourni est la seule source des routes, data-testid, libellés de champs, options de listes et messages d'erreur.
+N'invente AUCUN autre élément : un contrôle automatique refuse tout data-testid, libellé ou route absent du contrat.
 - Chaque test part d'un compte neuf : const slug = await newWorkspace(page) (fonction à définir dans le fichier, voir l'exemple).
-- Pages d'un module : /app/\${slug}/<module>. Fiche d'un élément : lien dans la liste.
-- Formulaire de création : data-testid="<table>-form" ; champs trouvés par leur label exact (getByLabel) ; bouton par son texte (getByRole("button", { name })).
-- Liste : data-testid="<table>-list" ; liste vide : data-testid="<table>-empty".
-- Messages d'erreur visibles (getByText) quand une règle est violée.
-- Titre de chaque test : « Sx — Étant donné …, quand …, alors … ». Au moins un test par story.
+- Si une story a besoin de données préalables (ex. un véhicule avant un contrat), crée-les par l'interface, sur leur page, dans le test (fonction d'aide locale au fichier).
+- Listes : selectOption({ label: "<libellé de l'option>" }) — jamais la valeur technique.
+- Vérifie les valeurs affichées selon les conventions d'affichage du contrat (ex. « 15 000 FCFA » avec une espace ordinaire, dates JJ/MM/AAAA).
+- Dates : calcule-les par rapport à aujourd'hui dans le test (new Date()), jamais de date fixe qui deviendrait fausse avec le temps.
+- Erreurs métier : expect(page.getByRole("alert")).toContainText("<message exact du contrat>").
+- Titre de chaque test : « Sx — Étant donné …, quand …, alors … ». Au moins un test par story. Tests courts et indépendants.
 
 Interdits : test.only/skip/fixme, waitForTimeout, page.evaluate, URL absolues, process.env, imports autres que "@playwright/test", "./helpers", "node:crypto".
 Helpers disponibles dans "./helpers" : signUp(page, email, name?, password?), createOrg(page, name), newEmail(label), logIn(page, email, password).
@@ -65,13 +84,27 @@ async function newWorkspace(page: Page): Promise<string> {
   return new URL(page.url()).pathname.split("/")[2]!;
 }
 
-test("S1 — Étant donné un atelier, quand j'ajoute un client, alors il apparaît dans la liste", async ({ page }) => {
-  const slug = await newWorkspace(page);
-  await page.goto(\`/app/\${slug}/customers\`);
+async function addCustomer(page: Page, slug: string, name: string) {
+  await page.goto(\`/app/\${slug}/clients\`);
   const form = page.getByTestId("customers-form");
-  await form.getByLabel("Nom").fill("Aminata Sow");
+  await form.getByLabel("Nom").fill(name);
+  await form.getByLabel("Téléphone").fill("771234567");
+  await form.getByLabel("Statut").selectOption({ label: "Actif" });
   await form.getByRole("button", { name: "Ajouter" }).click();
-  await expect(page.getByTestId("customers-list")).toContainText("Aminata Sow");
+  await expect(page.getByTestId("customers-list")).toContainText(name);
+}
+
+test("S2 — Étant donné un client, quand j'ajoute une commande de 15000 FCFA, alors elle apparaît avec son montant", async ({ page }) => {
+  const slug = await newWorkspace(page);
+  await addCustomer(page, slug, "Aminata Sow");
+  await page.goto(\`/app/\${slug}/commandes\`);
+  const form = page.getByTestId("orders-form");
+  await form.getByLabel("Intitulé").fill("Boubou brodé");
+  await form.getByLabel("Client").selectOption({ label: "Aminata Sow" });
+  await form.getByLabel("Montant (FCFA)").fill("15000");
+  await form.getByRole("button", { name: "Ajouter" }).click();
+  const row = page.getByTestId("orders-row").filter({ hasText: "Boubou brodé" });
+  await expect(row).toContainText("15 000 FCFA");
 });
 \`\`\`
 Tu écris UN seul fichier, pour les stories qu'on te donne. Réponds uniquement par UN bloc \`\`\`ts contenant le fichier complet, sans autre texte.`;
@@ -93,7 +126,9 @@ export function planTasks(spec: Spec, migrationPath: string): TaskPlanItem[] {
       depends_on: ["T0"],
       allowed_paths: [
         ...modulesOf(s.entities).flatMap((m) => [`src/app/app/[slug]/${m}/**`, `src/app/app/${m}-actions.ts`, `src/lib/${m}.ts`, `tests/unit/${m}.test.ts`]),
+        ...spec.views.flatMap((v) => (v.route_segment ? [`src/app/app/[slug]/${v.route_segment}/**`] : ["src/app/app/[slug]/page.tsx"])),
         "src/app/app/[slug]/layout.tsx",
+        "src/lib/format.ts",
       ],
     })),
   ];
@@ -147,36 +182,36 @@ export function groupStoriesByModule(spec: Spec): Map<string, Spec["stories"]> {
 }
 
 /** Un fichier de tests par module, un appel par fichier : réponses courtes, code brut (pas de JSON), 3 essais chacun. */
-async function writeAcceptanceTests(deps: SpecDeps, projectId: string, spec: Spec): Promise<TestFiles> {
+async function writeAcceptanceTests(deps: SpecDeps, projectId: string, spec: Spec, contract: UiContract): Promise<TestFiles> {
   const files: TestFiles["files"] = [];
   for (const [module, stories] of groupStoriesByModule(spec)) {
     const path = `tests/acceptance/${module}.spec.ts`;
     const ids = stories.map((s) => s.id);
-    const entityNames = new Set(stories.flatMap((s) => s.entities));
-    const base = `Fichier à écrire : ${path}\nStories à couvrir (au moins un test chacune, titre « Sx — … ») :\n${JSON.stringify(stories, null, 2)}\n\nEntités concernées (tables, modules, libellés EXACTS des champs) :\n${JSON.stringify(
-      spec.entities.filter((e) => entityNames.has(e.name)),
-      null,
-      2,
-    )}\n\nRègles métier :\n${spec.business_rules.map((r) => `- ${r}`).join("\n")}`;
+    const base = [
+      `Fichier à écrire : ${path}`,
+      `Stories à couvrir (au moins un test chacune, titre « Sx — … ») :\n${JSON.stringify(stories, null, 2)}`,
+      `CONTRAT D'INTERFACE (toute l'application) :\n${JSON.stringify(contract, null, 1)}`,
+      `Règles métier :\n${spec.business_rules.map((r) => `- ${r}`).join("\n")}`,
+    ].join("\n\n");
     let prompt = base;
     let problems: string[] = [];
     let content: string | null = null;
     for (let attempt = 1; attempt <= 3 && content === null; attempt++) {
       const res = await deps.llm.call({ agent: "acceptance_tests", projectId, tier: "standard", system: TEST_SYSTEM, prompt, maxTokens: 10000, promptVersion: SPEC_PROMPT_VERSION, acceptTruncated: true });
       const code = res.truncated ? null : extractCode(res.text);
-      problems = res.truncated ? ["Fichier trop long, coupé : écris des tests plus courts (un test par story suffit)."] : code === null ? ["Aucun bloc ```ts trouvé dans la réponse."] : checkTestFiles([{ path, content: code }], ids);
+      problems = res.truncated ? ["Fichier trop long, coupé : écris des tests plus courts (un test par story suffit)."] : code === null ? ["Aucun bloc ```ts trouvé dans la réponse."] : checkTestFiles([{ path, content: code }], ids, contract);
       if (problems.length === 0) content = code;
       else prompt = `${base}\n\nTa réponse précédente a été refusée par les contrôles automatiques :\n- ${problems.join("\n- ").slice(0, 2500)}\nRenvoie le fichier complet corrigé.`;
     }
     if (content === null) throw new Error(`acceptance_tests (${module}) : réponse refusée après 3 essais — ${problems.slice(0, 3).join(" ; ").slice(0, 400)}`);
     files.push({ path, content });
   }
-  const global = checkTestFiles(files, spec.stories.map((s) => s.id));
+  const global = checkTestFiles(files, spec.stories.map((s) => s.id), contract);
   if (global.length) throw new Error(`Tests d'acceptation incohérents : ${global.slice(0, 3).join(" ; ")}`);
   return { files };
 }
 
-export function renderSpec(spec: Spec, tests: TestFiles, migrationPath: string, tasks: TaskPlanItem[]): string {
+export function renderSpec(spec: Spec, tests: TestFiles, migrationPath: string, tasks: TaskPlanItem[], contract: UiContract): string {
   const L: string[] = [];
   L.push(`# ${spec.product_name} — Spécification MVP`, "", spec.summary, "");
   L.push(`**Voie :** ${spec.golden_path === "afrique" ? "Afrique (PWA + mobile money)" : "Europe (web + Stripe)"}  `);
@@ -191,13 +226,17 @@ export function renderSpec(spec: Spec, tests: TestFiles, migrationPath: string, 
   }
   L.push("## Données", "| Table | Champs |", "| --- | --- |");
   for (const e of spec.entities) {
-    L.push(`| ${e.name} (${e.label}) | ${e.fields.map((f) => `${f.name}${f.required ? "*" : ""} : ${f.type === "ref" ? `→ ${f.ref}` : f.type === "enum" ? (f.values ?? []).join("/") : f.type}`).join(", ")} |`);
+    L.push(`| ${e.name} (${e.label}) | ${e.fields.map((f) => `${f.name}${f.required ? "*" : ""} : ${f.type === "ref" ? `→ ${f.ref}` : f.type === "enum" ? (f.values ?? []).map((v) => v.label).join("/") : f.type}${f.min !== undefined ? ` ≥ ${f.min}` : ""}`).join(", ")} |`);
   }
-  L.push("", "## Règles métier", ...spec.business_rules.map((r) => `- ${r}`), "");
+  const guaranteed = spec.entities.flatMap((e) => e.constraints.map((c) => `- ${e.label} : ${c.message} (${c.kind})`));
+  L.push("", "## Règles garanties par la base", ...(guaranteed.length ? guaranteed : ["- (aucune)"]), "");
+  L.push("## Écrans calculés", ...(spec.views.length ? spec.views.map((v) => `- **${v.name}** (/${v.route_segment}) : ${v.description}`) : ["- (aucun)"]), "");
+  L.push("## Règles métier", ...spec.business_rules.map((r) => `- ${r}`), "");
   L.push("## Hors MVP", ...spec.out_of_scope.map((r) => `- ${r}`), "");
   L.push("## Trouver les premiers clients", spec.prospecting, "");
   L.push("## Fichiers produits", `- Migration (générée par le code, RLS incluse) : \`${migrationPath}\``, ...tests.files.map((f) => `- Tests d'acceptation : \`${f.path}\``), "");
-  L.push("## Plan de construction", ...tasks.map((t) => `- ${t.id} : ${t.title}`));
+  L.push("## Plan de construction", ...tasks.map((t) => `- ${t.id} : ${t.title}`), "");
+  L.push(renderContract(contract));
   return L.join("\n");
 }
 
@@ -245,11 +284,12 @@ export async function runSpec(deps: SpecDeps, projectId: string, instruction?: s
   const migrationPath = migrationFileName(spec);
   const migration = generateMigration(spec);
 
-  const tests = await writeAcceptanceTests(deps, projectId, spec);
+  const contract = buildUiContract(spec);
+  const tests = await writeAcceptanceTests(deps, projectId, spec, contract);
 
   const tasks = planTasks(spec, migrationPath);
-  const markdown = renderSpec(spec, tests, migrationPath, tasks);
-  const version = await saveArtifact(db, projectId, "spec", { spec, migration: { path: migrationPath, sql: migration }, tasks, instruction: instruction ?? null }, markdown);
+  const markdown = renderSpec(spec, tests, migrationPath, tasks, contract);
+  const version = await saveArtifact(db, projectId, "spec", { spec, contract, migration: { path: migrationPath, sql: migration }, tasks, instruction: instruction ?? null }, markdown);
   await saveArtifact(db, projectId, "test_plan", tests, tests.files.map((f) => `// ${f.path}\n${f.content}`).join("\n\n"));
   await transition(db, projectId, "SPECIFYING", "AWAITING_P2", "system", `spec v${version} prête`);
 
