@@ -4,12 +4,12 @@ import { requestApproval } from "../domain/approvals.ts";
 import { getProject, latestArtifact, saveArtifact, transition, type Project } from "../domain/projects.ts";
 import { extractJson, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
-import { checkSpec, specSchema, type Spec } from "../spec/schema.ts";
+import { checkSpec, specSchema, topoOrder, type Spec } from "../spec/schema.ts";
 import { generateMigration, migrationFileName } from "../spec/sql.ts";
-import { checkTestFiles, testFilesSchema, type TestFiles } from "../spec/tests-check.ts";
+import { checkTestFiles, type TestFiles } from "../spec/tests-check.ts";
 import { shorten } from "./dossier.ts";
 
-export const SPEC_PROMPT_VERSION = "spec-v1";
+export const SPEC_PROMPT_VERSION = "spec-v2";
 
 const SPEC_SYSTEM = `Tu es le Product Manager d'une usine à SaaS. Tu travailles en français.
 Tu transformes un dossier d'opportunité validé en spécification de MVP, construite sur un gabarit existant qui fournit DÉJÀ :
@@ -74,7 +74,7 @@ test("S1 — Étant donné un atelier, quand j'ajoute un client, alors il appara
   await expect(page.getByTestId("customers-list")).toContainText("Aminata Sow");
 });
 \`\`\`
-Réponds uniquement par un objet JSON dans un bloc \`\`\`json : { "files": [{ "path": "tests/acceptance/<module>.spec.ts", "content": "..." }] }`;
+Tu écris UN seul fichier, pour les stories qu'on te donne. Réponds uniquement par UN bloc \`\`\`ts contenant le fichier complet, sans autre texte.`;
 
 export type SpecDeps = { db: Db; llm: Llm; notifier: Notifier };
 
@@ -125,6 +125,57 @@ async function structured<T>(
   throw new Error(`${params.agent} : réponse refusée après 3 essais — ${problems.slice(0, 3).join(" ; ").slice(0, 400)}`);
 }
 
+/** Extrait le premier bloc de code TypeScript d'une réponse. */
+export function extractCode(text: string): string | null {
+  const m = /```(?:ts|typescript)?[ \t]*\r?\n([\s\S]*?)```/.exec(text);
+  return m?.[1]?.trim() ? `${m[1].trim()}\n` : null;
+}
+
+/**
+ * Story → module du fichier de tests : celui de son entité la plus « dépendante »
+ * (une story « créer une commande pour un client » touche customers et orders : elle relève d'orders).
+ */
+export function groupStoriesByModule(spec: Spec): Map<string, Spec["stories"]> {
+  const order = topoOrder(spec.entities).map((e) => e.name);
+  const groups = new Map<string, Spec["stories"]>();
+  for (const story of spec.stories) {
+    const main = [...story.entities].sort((a, b) => order.indexOf(b) - order.indexOf(a))[0];
+    const module = spec.entities.find((e) => e.name === main)?.module ?? "app";
+    groups.set(module, [...(groups.get(module) ?? []), story]);
+  }
+  return groups;
+}
+
+/** Un fichier de tests par module, un appel par fichier : réponses courtes, code brut (pas de JSON), 3 essais chacun. */
+async function writeAcceptanceTests(deps: SpecDeps, projectId: string, spec: Spec): Promise<TestFiles> {
+  const files: TestFiles["files"] = [];
+  for (const [module, stories] of groupStoriesByModule(spec)) {
+    const path = `tests/acceptance/${module}.spec.ts`;
+    const ids = stories.map((s) => s.id);
+    const entityNames = new Set(stories.flatMap((s) => s.entities));
+    const base = `Fichier à écrire : ${path}\nStories à couvrir (au moins un test chacune, titre « Sx — … ») :\n${JSON.stringify(stories, null, 2)}\n\nEntités concernées (tables, modules, libellés EXACTS des champs) :\n${JSON.stringify(
+      spec.entities.filter((e) => entityNames.has(e.name)),
+      null,
+      2,
+    )}\n\nRègles métier :\n${spec.business_rules.map((r) => `- ${r}`).join("\n")}`;
+    let prompt = base;
+    let problems: string[] = [];
+    let content: string | null = null;
+    for (let attempt = 1; attempt <= 3 && content === null; attempt++) {
+      const res = await deps.llm.call({ agent: "acceptance_tests", projectId, tier: "standard", system: TEST_SYSTEM, prompt, maxTokens: 10000, promptVersion: SPEC_PROMPT_VERSION, acceptTruncated: true });
+      const code = res.truncated ? null : extractCode(res.text);
+      problems = res.truncated ? ["Fichier trop long, coupé : écris des tests plus courts (un test par story suffit)."] : code === null ? ["Aucun bloc ```ts trouvé dans la réponse."] : checkTestFiles([{ path, content: code }], ids);
+      if (problems.length === 0) content = code;
+      else prompt = `${base}\n\nTa réponse précédente a été refusée par les contrôles automatiques :\n- ${problems.join("\n- ").slice(0, 2500)}\nRenvoie le fichier complet corrigé.`;
+    }
+    if (content === null) throw new Error(`acceptance_tests (${module}) : réponse refusée après 3 essais — ${problems.slice(0, 3).join(" ; ").slice(0, 400)}`);
+    files.push({ path, content });
+  }
+  const global = checkTestFiles(files, spec.stories.map((s) => s.id));
+  if (global.length) throw new Error(`Tests d'acceptation incohérents : ${global.slice(0, 3).join(" ; ")}`);
+  return { files };
+}
+
 export function renderSpec(spec: Spec, tests: TestFiles, migrationPath: string, tasks: TaskPlanItem[]): string {
   const L: string[] = [];
   L.push(`# ${spec.product_name} — Spécification MVP`, "", spec.summary, "");
@@ -163,41 +214,38 @@ export async function runSpec(deps: SpecDeps, projectId: string, instruction?: s
   const dossier = await latestArtifact(db, projectId, "dossier");
   if (!dossier) throw new Error("Aucun dossier d'opportunité : la spec part toujours du dossier validé.");
   const previous = await latestArtifact(db, projectId, "spec");
-  await notifier.send(`📝 Rédaction de la spec pour « ${project.title} »${instruction ? " avec ta consigne" : ""} (environ 5 min).`);
+  await notifier.send(`📝 Rédaction de la spec pour « ${project.title} »${instruction ? " avec ta consigne" : ""} (10 à 15 min).`);
 
-  const spec = await structured(deps, specSchema, checkSpec, {
-    agent: "spec",
-    projectId,
-    tier: "strong",
-    system: SPEC_SYSTEM,
-    prompt: [
-      `Demande initiale :\n"""${project.request}"""`,
-      `Dossier d'opportunité validé (P1) :\n"""${dossier.markdown.slice(0, 30_000)}"""`,
-      previous && instruction ? `Spec précédente (à retravailler) :\n"""${previous.markdown.slice(0, 20_000)}"""` : "",
-      instruction ? `CONSIGNE DU PROPRIÉTAIRE (prioritaire) :\n"""${instruction}"""` : "",
-      `Forme attendue :\n${SPEC_SHAPE}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n"),
-    maxTokens: 16000,
-  });
+  // Brouillon déjà validé et payé (relance après un échec des tests, sans nouvelle consigne) : on le réutilise.
+  // Chaque exécution réussie enregistre exactement un brouillon et une spec : un brouillon plus récent = exécution interrompue.
+  const draft = instruction ? null : await latestArtifact(db, projectId, "spec_draft");
+  const parsedDraft = draft && (!previous || draft.version > previous.version) ? specSchema.safeParse((draft.content as { spec?: unknown }).spec) : null;
+  const reused = parsedDraft?.success && checkSpec(parsedDraft.data).length === 0 ? parsedDraft.data : null;
+
+  const spec: Spec =
+    reused ??
+    (await structured(deps, specSchema, checkSpec, {
+      agent: "spec",
+      projectId,
+      tier: "strong",
+      system: SPEC_SYSTEM,
+      prompt: [
+        `Demande initiale :\n"""${project.request}"""`,
+        `Dossier d'opportunité validé (P1) :\n"""${dossier.markdown.slice(0, 30_000)}"""`,
+        previous && instruction ? `Spec précédente (à retravailler) :\n"""${previous.markdown.slice(0, 20_000)}"""` : "",
+        instruction ? `CONSIGNE DU PROPRIÉTAIRE (prioritaire) :\n"""${instruction}"""` : "",
+        `Forme attendue :\n${SPEC_SHAPE}`,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      maxTokens: 16000,
+    }));
+  if (!reused) await saveArtifact(db, projectId, "spec_draft", { spec }, spec.product_name);
 
   const migrationPath = migrationFileName(spec);
   const migration = generateMigration(spec);
-  const storyIds = spec.stories.map((s) => s.id);
 
-  const tests = await structured(deps, testFilesSchema, (t) => checkTestFiles(t.files, storyIds), {
-    agent: "acceptance_tests",
-    projectId,
-    tier: "standard",
-    system: TEST_SYSTEM,
-    prompt: `Spécification (stories, critères, entités et libellés exacts des champs) :\n${JSON.stringify(
-      { stories: spec.stories, entities: spec.entities, business_rules: spec.business_rules },
-      null,
-      2,
-    )}\n\nÉcris un fichier de tests par module.`,
-    maxTokens: 16000,
-  });
+  const tests = await writeAcceptanceTests(deps, projectId, spec);
 
   const tasks = planTasks(spec, migrationPath);
   const markdown = renderSpec(spec, tests, migrationPath, tasks);

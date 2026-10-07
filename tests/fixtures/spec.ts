@@ -88,3 +88,18 @@ test("S2 — Étant donné un client, quand je crée une commande, alors elle ap
   await expect(page.getByTestId("orders-empty")).toBeVisible();
 });
 `;
+
+const HEADER = `import { expect, test, type Page } from "@playwright/test";
+import { createOrg, newEmail, signUp } from "./helpers";
+
+async function newWorkspace(page: Page): Promise<string> {
+  await signUp(page, newEmail("e2e"), "Testeur");
+  await createOrg(page, "Atelier Test");
+  return new URL(page.url()).pathname.split("/")[2]!;
+}
+`;
+
+/** Fichier du module customers (S1) et du module orders (S2), tels qu'un agent QA les renverrait. */
+export const CUSTOMERS_TEST = VALID_TEST_FILE.slice(0, VALID_TEST_FILE.indexOf('test("S2'));
+export const ORDERS_TEST = HEADER + "\n" + VALID_TEST_FILE.slice(VALID_TEST_FILE.indexOf('test("S2'));
+export const asTsBlock = (code: string) => "Voici le fichier :\n```ts\n" + code + "\n```";

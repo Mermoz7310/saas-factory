@@ -7,13 +7,13 @@ import { decide as decideApproval } from "../src/domain/approvals.ts";
 import { createProject, getProject, latestArtifact, saveArtifact, transition } from "../src/domain/projects.ts";
 import type { Llm, LlmRequest, LlmResult } from "../src/llm/client.ts";
 import { NullNotifier } from "../src/notify.ts";
-import { planTasks, runSpec } from "../src/pipeline/spec.ts";
+import { extractCode, groupStoriesByModule, planTasks, runSpec } from "../src/pipeline/spec.ts";
 import { checkSpec, specSchema } from "../src/spec/schema.ts";
 import { generateMigration, migrationFileName } from "../src/spec/sql.ts";
 import { checkTestFiles } from "../src/spec/tests-check.ts";
 import * as cmd from "../src/telegram/commands.ts";
 import type { Queue } from "../src/jobs.ts";
-import { VALID_TEST_FILE, validSpec } from "./fixtures/spec.ts";
+import { CUSTOMERS_TEST, ORDERS_TEST, VALID_TEST_FILE, asTsBlock, validSpec } from "./fixtures/spec.ts";
 import { freshDb } from "./setup-db.ts";
 
 let db: Db;
@@ -190,6 +190,14 @@ describe("contrôles des tests d'acceptation générés", () => {
   });
 });
 
+describe("découpage des tests", () => {
+  it("regroupe les stories par module de leur première entité et extrait le code brut", () => {
+    expect([...groupStoriesByModule(validSpec()).entries()].map(([m, st]) => [m, st.map((x) => x.id)])).toEqual([["customers", ["S1"]], ["orders", ["S2"]]]);
+    expect(extractCode(asTsBlock("const a = 1;"))).toBe("const a = 1;\n");
+    expect(extractCode("aucun bloc")).toBeNull();
+  });
+});
+
 describe("plan de construction", () => {
   it("migration d'abord, puis une tâche par story limitée aux fichiers de ses modules", () => {
     const tasks = planTasks(validSpec(), "supabase/migrations/x.sql");
@@ -213,7 +221,7 @@ class ScriptedLlm implements Llm {
   }
 }
 const json = (o: unknown) => "```json\n" + JSON.stringify(o) + "\n```";
-const testsOk = { text: json({ files: [{ path: "tests/acceptance/customers.spec.ts", content: VALID_TEST_FILE }] }) };
+const testsOk = [{ text: asTsBlock(CUSTOMERS_TEST) }, { text: asTsBlock(ORDERS_TEST) }];
 
 async function projectInSpecifying(title: string) {
   const p = await createProject(db, title);
@@ -236,7 +244,7 @@ describe("étape 2 de bout en bout (modèles simulés)", () => {
   it("produit spec, migration et tests, les envoie en fichiers et demande la validation P2", async () => {
     const p = await projectInSpecifying("Gestion des ateliers de couture à Dakar");
     const notifier = new NullNotifier();
-    const llm = new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [testsOk] });
+    const llm = new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [...testsOk] });
 
     expect(await runSpec({ db, llm, notifier }, p.id)).toBe("AWAITING_P2");
     expect((await getProject(db, p.id))?.state).toBe("AWAITING_P2");
@@ -262,23 +270,48 @@ describe("étape 2 de bout en bout (modèles simulés)", () => {
     const p = await projectInSpecifying("Projet à la spec incohérente au départ");
     const broken = validSpec();
     broken.stories[1]!.entities = ["invoices"];
-    const llm = new ScriptedLlm({ spec: [{ text: json(broken) }, { text: json(validSpec()) }], acceptance_tests: [testsOk] });
+    const llm = new ScriptedLlm({ spec: [{ text: json(broken) }, { text: json(validSpec()) }], acceptance_tests: [...testsOk] });
     await runSpec({ db, llm, notifier: new NullNotifier() }, p.id);
     const specCalls = llm.calls.filter((c) => c.agent === "spec");
     expect(specCalls).toHaveLength(2);
     expect(specCalls[1]!.prompt).toContain("S2 utilise une entité inconnue « invoices »");
   });
 
-  it("des tests qui ne couvrent pas toutes les stories sont refusés jusqu'à correction", async () => {
+  it("des tests qui ne couvrent pas leurs stories sont refusés jusqu'à correction, fichier par fichier", async () => {
     const p = await projectInSpecifying("Projet aux tests incomplets au départ");
-    const partial = VALID_TEST_FILE.slice(0, VALID_TEST_FILE.indexOf('test("S2'));
+    const withoutS1 = CUSTOMERS_TEST.replace('test("S1 —', 'test("Sans story —');
     const llm = new ScriptedLlm({
       spec: [{ text: json(validSpec()) }],
-      acceptance_tests: [{ text: json({ files: [{ path: "tests/acceptance/customers.spec.ts", content: partial }] }) }, testsOk],
+      acceptance_tests: [{ text: asTsBlock(withoutS1) }, { text: asTsBlock(CUSTOMERS_TEST) }, { text: asTsBlock(ORDERS_TEST) }],
     });
     await runSpec({ db, llm, notifier: new NullNotifier() }, p.id);
     const calls = llm.calls.filter((c) => c.agent === "acceptance_tests");
-    expect(calls[1]!.prompt).toContain("Aucun test pour S2");
+    expect(calls).toHaveLength(3);
+    expect(calls[0]!.prompt).toContain("tests/acceptance/customers.spec.ts");
+    expect(calls[1]!.prompt).toContain("Aucun test pour S1");
+    expect(calls[2]!.prompt).toContain("tests/acceptance/orders.spec.ts");
+    const tests = await latestArtifact(db, p.id, "test_plan");
+    expect((tests?.content as { files: { path: string }[] }).files.map((f) => f.path)).toEqual(["tests/acceptance/customers.spec.ts", "tests/acceptance/orders.spec.ts"]);
+  });
+
+  it("un fichier de tests coupé par la longueur est redemandé plus court", async () => {
+    const p = await projectInSpecifying("Projet aux tests trop longs au départ");
+    const llm = new ScriptedLlm({
+      spec: [{ text: json(validSpec()) }],
+      acceptance_tests: [{ text: "```ts\nimport", truncated: true }, ...testsOk],
+    });
+    expect(await runSpec({ db, llm, notifier: new NullNotifier() }, p.id)).toBe("AWAITING_P2");
+    expect(llm.calls.filter((c) => c.agent === "acceptance_tests")[1]!.prompt).toContain("trop long");
+  });
+
+  it("une relance après un échec des tests réutilise la spec déjà validée au lieu de la repayer", async () => {
+    const p = await projectInSpecifying("Projet dont les tests ont échoué une fois");
+    const first = new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [{ text: "pas de code" }] });
+    await expect(runSpec({ db, llm: first, notifier: new NullNotifier() }, p.id)).rejects.toThrow(/acceptance_tests \(customers\)/);
+
+    const second = new ScriptedLlm({ acceptance_tests: [...testsOk] });
+    expect(await runSpec({ db, llm: second, notifier: new NullNotifier() }, p.id)).toBe("AWAITING_P2");
+    expect(second.calls.map((c) => c.agent)).not.toContain("spec");
   });
 
   it("après 3 refus, l'étape échoue sans changer d'état (le traitement le passera en échec)", async () => {
@@ -301,7 +334,7 @@ describe("porte P2 et commandes", () => {
   async function awaitingP2() {
     const p = await projectInSpecifying("Projet en attente de P2");
     const notifier = new NullNotifier();
-    await runSpec({ db, llm: new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [testsOk] }), notifier }, p.id);
+    await runSpec({ db, llm: new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [...testsOk] }), notifier }, p.id);
     const { rows } = await db.query<{ id: string }>("select id from approvals where project_id = $1 and gate = 'P2'", [p.id]);
     return { p: (await getProject(db, p.id))!, approvalId: rows[0]!.id };
   }
@@ -331,7 +364,7 @@ describe("porte P2 et commandes", () => {
   it("la nouvelle spec tient compte de la consigne et devient la version 2", async () => {
     const { p } = await awaitingP2();
     await cmd.cmdRetravailler({ db, queue: new FakeQueue() }, `${p.slug} Ajoute une story pour exporter les clients.`);
-    const llm = new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [testsOk] });
+    const llm = new ScriptedLlm({ spec: [{ text: json(validSpec()) }], acceptance_tests: [...testsOk] });
     await runSpec({ db, llm, notifier: new NullNotifier() }, p.id, "Ajoute une story pour exporter les clients.");
     const prompt = llm.calls.find((c) => c.agent === "spec")!.prompt;
     expect(prompt).toContain("CONSIGNE DU PROPRIÉTAIRE");
