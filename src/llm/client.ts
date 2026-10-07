@@ -13,6 +13,8 @@ export type LlmRequest = {
   maxTokens: number;
   /** Autorise la recherche web et la lecture de pages, avec des plafonds. */
   research?: { maxSearches: number; maxFetches: number };
+  /** Accepte une réponse coupée par la limite de longueur (utile pour des notes : le début reste exploitable). */
+  acceptTruncated?: boolean;
   /** Budget réservé avant l'appel (obligatoire pour les appels avec recherche, dont le coût n'est pas bornable à l'avance). */
   reserveUsd?: number;
 };
@@ -22,7 +24,7 @@ export type FetchedSource = { url: string; title: string | null; text: string | 
 
 const MAX_PAGE_TEXT = 300_000;
 
-export type LlmResult = { text: string; fetched: FetchedSource[]; costUsd: number };
+export type LlmResult = { text: string; fetched: FetchedSource[]; costUsd: number; truncated?: boolean };
 
 export interface Llm {
   call(req: LlmRequest): Promise<LlmResult>;
@@ -74,6 +76,7 @@ export class ClaudeLlm implements Llm {
     const messages: Anthropic.Messages.MessageParam[] = [{ role: "user", content: req.prompt }];
     const texts: string[] = [];
     const fetched = new Map<string, FetchedSource>();
+    let truncated = false;
 
     try {
       for (let round = 0; ; round++) {
@@ -97,12 +100,15 @@ export class ClaudeLlm implements Llm {
           continue;
         }
         if (res.stop_reason === "refusal") throw new Error("Le modèle a refusé la demande.");
-        if (res.stop_reason === "max_tokens") throw new Error(`Réponse tronquée (max_tokens=${req.maxTokens}).`);
+        if (res.stop_reason === "max_tokens") {
+          if (!req.acceptTruncated) throw new Error(`Réponse tronquée (max_tokens=${req.maxTokens}).`);
+          truncated = true;
+        }
         break;
       }
       const cost = costUsd(model, usage);
       await this.record(req, model, usage, cost, Date.now() - started, "ok", null);
-      return { text: texts.join("\n").trim(), fetched: [...fetched.values()], costUsd: cost };
+      return { text: texts.join("\n").trim(), fetched: [...fetched.values()], costUsd: cost, ...(truncated ? { truncated } : {}) };
     } catch (error) {
       const cost = usage.input_tokens || usage.output_tokens ? costUsd(model, usage) : 0;
       const message = error instanceof Error ? error.message : String(error);

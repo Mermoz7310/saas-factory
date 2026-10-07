@@ -6,7 +6,7 @@ import { extractJson, type FetchedSource, type Llm } from "../llm/client.ts";
 import type { Notifier } from "../notify.ts";
 import { decide, dossierSchema, redTeamSchema, renderDossier, verifyDossier, type DossierDraft, type RedTeam } from "./dossier.ts";
 
-export const PROMPT_VERSION = "discovery-v2";
+export const PROMPT_VERSION = "discovery-v3";
 
 const GOLDEN_PATH = `Périmètre constructible par l'usine (deux « voies dorées ») :
 - "europe" : SaaS B2B web multi-organisations, utilisé surtout sur ordinateur, paiement par carte (Stripe).
@@ -19,6 +19,7 @@ Règles :
 - Cherche avec web_search, puis OUVRE avec web_fetch chaque page sur laquelle tu t'appuies. Une page seulement vue dans les résultats de recherche ne compte pas comme preuve.
 - Cherche : preuves du problème (forums, avis, articles, rapports), solutions actuelles (Excel, papier, WhatsApp, logiciels), concurrents et leurs prix, disposition à payer de la cible.
 - Privilégie les sources de la zone géographique concernée.
+- Notes finales concises : 20 faits au maximum, 1 500 mots au maximum, sans répéter le contenu des pages.
 - Termine par des notes structurées : chaque fait suivi de l'URL exacte de la page ouverte ET d'une citation exacte de 8 à 30 mots recopiée mot pour mot de cette page, entre guillemets.
 ${GOLDEN_PATH}`;
 
@@ -96,11 +97,15 @@ export async function runDiscovery(deps: DiscoveryDeps, projectId: string): Prom
     promptVersion: PROMPT_VERSION,
     system: RESEARCH_SYSTEM,
     prompt: `Demande de l'utilisateur :\n"""${project.request}"""\n\nMène la recherche puis rédige tes notes sourcées.`,
-    maxTokens: 8000,
+    maxTokens: 16000,
+    acceptTruncated: true,
     research: { maxSearches: 8, maxFetches: 10 },
     reserveUsd: 3,
   });
   const fetched: FetchedSource[] = research.fetched;
+  if (research.truncated && research.text.length < 1500) {
+    throw new Error("Notes de recherche coupées trop tôt pour être exploitables.");
+  }
   for (const s of fetched) {
     await db.query(
       "insert into sources (project_id, url, title, content) values ($1, $2, $3, $4) on conflict (project_id, url) do update set content = coalesce(excluded.content, sources.content)",

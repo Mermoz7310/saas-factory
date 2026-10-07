@@ -199,3 +199,11 @@ describe("espace de travail Anthropic", () => {
     expect(loadConfig({ DATABASE_URL: "postgresql://x", ANTHROPIC_WORKSPACE_ID: "" }).ANTHROPIC_WORKSPACE_ID).toBeUndefined();
   });
 });
+
+describe("réponses coupées par la limite de longueur", () => {
+  it("acceptées et signalées si l'appel l'autorise (notes de recherche)", async () => {
+    const api = fakeApi([{ stop_reason: "max_tokens", content: [{ type: "text", text: "notes partielles", citations: null }] as Anthropic.Messages.ContentBlock[] }]);
+    const res = await new ClaudeLlm(db, api).call({ agent: "r", projectId: null, tier: "fast", promptVersion: "t", system: "s", prompt: "p", maxTokens: 10, acceptTruncated: true });
+    expect(res).toMatchObject({ text: "notes partielles", truncated: true });
+  });
+});

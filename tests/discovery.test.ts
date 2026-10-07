@@ -225,3 +225,20 @@ describe("portes humaines", () => {
     expect(await decideApproval(db, "pas-un-uuid", "approve")).toEqual({ ok: false, reason: "Demande inconnue." });
   });
 });
+
+describe("notes de recherche coupées", () => {
+  it("des notes coupées mais longues sont exploitées ; trop courtes, la recherche échoue proprement", async () => {
+    const ok = await createProject(db, "Projet aux notes longues mais coupées");
+    const llmOk = new ScriptedLlm({
+      research: [{ ...researchOk, text: "n".repeat(2000), truncated: true }],
+      synthesis: [{ text: json(draft()) }],
+      red_team: [{ text: json(redTeam()) }],
+    });
+    expect(await runDiscovery({ db, llm: llmOk, notifier: new NullNotifier() }, ok.id)).toBe("AWAITING_P1");
+    expect(llmOk.calls.find((c) => c.agent === "research")?.acceptTruncated).toBe(true);
+
+    const ko = await createProject(db, "Projet aux notes trop courtes");
+    const llmKo = new ScriptedLlm({ research: [{ ...researchOk, text: "court", truncated: true }] });
+    await expect(runDiscovery({ db, llm: llmKo, notifier: new NullNotifier() }, ko.id)).rejects.toThrow(/coupées trop tôt/);
+  });
+});
