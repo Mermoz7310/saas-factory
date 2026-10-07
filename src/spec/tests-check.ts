@@ -27,6 +27,8 @@ const FORBIDDEN: { re: RegExp; why: string }[] = [
   { re: /\bprocess\.env\b/, why: "lecture de variables d'environnement dans un test d'acceptation" },
   { re: /\b(?:require|eval)\s*\(/, why: "require/eval interdits" },
   { re: /\bpage\.evaluate\s*\(/, why: "page.evaluate interdit : tester par l'interface comme un utilisateur" },
+  { re: /getByRole\(\s*["'`]alert["'`]/, why: "getByRole(\"alert\") interdit (ambigu avec l'annonceur de Next.js) : utiliser getByTestId(\"form-error\")" },
+  { re: /\.toHaveCSS\s*\(/, why: "toHaveCSS interdit (couleurs fragiles) : vérifier l'attribut data-tone" },
 ];
 
 /** Route d'un page.goto : les parties variables deviennent « * ». undefined = non analysable (ignorée). */

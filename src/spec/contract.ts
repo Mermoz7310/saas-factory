@@ -8,7 +8,8 @@ import { RESERVED_SEGMENTS, type Entity, type Field, type Spec } from "./schema.
  */
 
 /** Éléments fournis par le gabarit, utilisables dans les tests. */
-export const TEMPLATE_TESTIDS = ["org-name", "invite-form", "members-list", "pending-invitations", "user-email", "billing-disabled"];
+/** form-error : message d'erreur métier commun à toutes les pages (convention du contrat). */
+export const TEMPLATE_TESTIDS = ["org-name", "invite-form", "members-list", "pending-invitations", "user-email", "billing-disabled", "form-error"];
 export const TEMPLATE_LABELS = ["Nom complet", "E-mail", "Mot de passe", "Nom de l'organisation", "Rôle"];
 export const TEMPLATE_SEGMENTS = ["members", "settings", "billing", "audit"];
 export { RESERVED_SEGMENTS };
@@ -29,7 +30,7 @@ export type ContractEntity = {
   table: string;
   label: string;
   route: string;
-  testids: { form: string; list: string; row: string; empty: string; edit_form: string };
+  testids: { form: string; list: string; row: string; empty: string; edit_form: string; filters: string; total: string };
   title_field: string;
   delete: "admin" | "membre";
   fields: ContractField[];
@@ -66,11 +67,14 @@ export const CONVENTIONS = [
   "Date : <input type=\"date\">, remplie au format AAAA-MM-JJ. Montants et nombres : <input type=\"number\">, remplis avec des chiffres seuls (\"15000\"). Case à cocher : check().",
   "Après « Ajouter », la nouvelle ligne apparaît dans data-testid=\"<table>-list\" ; chaque ligne est un élément data-testid=\"<table>-row\" qui contient le texte du champ titre (title_field) et les valeurs affichées.",
   "Liste vide : un élément data-testid=\"<table>-empty\" remplace la liste.",
-  `Chaque ligne a un bouton « ${BUTTONS.edit} » qui affiche dans la ligne un formulaire data-testid="<table>-edit-form" (mêmes libellés, pré-rempli) avec le bouton « ${BUTTONS.save} », et un bouton « ${BUTTONS.remove} » visible seulement pour les rôles autorisés (« delete »). La suppression est immédiate (pas de boîte de confirmation).`,
-  "Affichage des valeurs dans les listes et écrans : montant FCFA = chiffres groupés par 3 avec une ESPACE ORDINAIRE + \" FCFA\" (ex. « 15 000 FCFA ») ; montant EUR = « 12,50 € » ; date = JJ/MM/AAAA ; liste = libellé de l'option (jamais la valeur technique) ; case à cocher = « Oui »/« Non ».",
-  "Erreur métier (contrainte de la base refusée) : la page affiche le « message » correspondant dans un élément role=\"alert\" et n'ajoute aucune ligne. Dans les tests : expect(page.getByRole(\"alert\")).toContainText(\"<message>\").",
+  `Chaque ligne a un bouton « ${BUTTONS.edit} » qui affiche dans la ligne un formulaire data-testid="<table>-edit-form" (mêmes libellés, pré-rempli) avec le bouton « ${BUTTONS.save} », et un bouton « ${BUTTONS.remove} » visible seulement pour les rôles autorisés (« delete »). La suppression est immédiate (pas de boîte de confirmation). Après « ${BUTTONS.save} » réussi, le formulaire d'édition se ferme et la ligne affiche les nouvelles valeurs.`,
+  "Filtres et total d'une liste (seulement si une story les demande) : au-dessus de la liste, un bloc data-testid=\"<table>-filters\" contenant des <select> dont les libellés sont ceux des champs du formulaire (ex. « Véhicule », « Catégorie », première option « Tous ») ; le total des montants affichés est dans data-testid=\"<table>-total\". Dans les tests : page.getByTestId(\"expenses-filters\").getByLabel(\"Véhicule\").",
+  "Affichage des valeurs dans les listes et écrans : montant FCFA = chiffres groupés par 3 avec une ESPACE ORDINAIRE + \" FCFA\" (ex. « 15 000 FCFA ») ; montant EUR = « 12,50 € » ; date = JJ/MM/AAAA ; liste = libellé de l'option (jamais la valeur technique) ; case à cocher = « Oui »/« Non » ; montant négatif = signe moins typographique « − » (U+2212) collé au nombre : « −15 000 FCFA ».",
+  "État visuel (rouge, orange, vert) : l'élément porte l'attribut data-tone=\"danger\" | \"warning\" | \"success\". Les tests vérifient cet attribut (toHaveAttribute), JAMAIS une couleur CSS.",
+  "Erreur métier (contrainte de la base refusée) : la page affiche le « message » correspondant dans un élément <p role=\"alert\" data-testid=\"form-error\"> et n'ajoute ni ne modifie aucune ligne. Dans les tests : expect(page.getByTestId(\"form-error\")).toContainText(\"<message>\") — jamais getByRole(\"alert\") (Next.js a déjà un élément role=alert invisible).",
   "Champ obligatoire vide : le navigateur bloque l'envoi (attribut required) ; ne pas tester le texte du message du navigateur.",
-  "Écrans calculés (« views ») : route et identifiants de test donnés ci-dessous ; leurs champs de filtre ont les libellés « labels ».",
+  "Écrans calculés (« views ») : route et identifiants de test donnés ci-dessous ; leurs champs de filtre ont les libellés « labels ». Filtre de mois : <input type=\"month\"> rempli au format AAAA-MM ; filtre à choix : <select> (première option « Tous »).",
+  "Libellés : dans les tests, utiliser getByLabel(\"…\", { exact: true }) pour éviter qu'un libellé en attrape un autre (« Date » / « Date de début »).",
   "Les tests n'utilisent QUE les routes, data-testid et libellés de ce contrat, plus ceux du gabarit (helpers.ts : signUp, logIn, createOrg, newEmail, DEMO).",
 ];
 
@@ -93,7 +97,7 @@ export function buildUiContract(spec: Spec): UiContract {
       table: e.name,
       label: e.label,
       route: `/app/<slug>/${e.module}`,
-      testids: { form: `${e.name}-form`, list: `${e.name}-list`, row: `${e.name}-row`, empty: `${e.name}-empty`, edit_form: `${e.name}-edit-form` },
+      testids: { form: `${e.name}-form`, list: `${e.name}-list`, row: `${e.name}-row`, empty: `${e.name}-empty`, edit_form: `${e.name}-edit-form`, filters: `${e.name}-filters`, total: `${e.name}-total` },
       title_field: e.title_field,
       delete: e.delete_requires_admin ? "admin" : "membre",
       fields: e.fields.map((f) => contractField(f, byName)),

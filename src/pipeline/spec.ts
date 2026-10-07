@@ -10,7 +10,7 @@ import { generateMigration, migrationFileName } from "../spec/sql.ts";
 import { checkTestFiles, type TestFiles } from "../spec/tests-check.ts";
 import { shorten } from "./dossier.ts";
 
-export const SPEC_PROMPT_VERSION = "spec-v3";
+export const SPEC_PROMPT_VERSION = "spec-v4";
 
 const SPEC_SYSTEM = `Tu es le Product Manager d'une usine à SaaS. Tu travailles en français.
 Tu transformes un dossier d'opportunité validé en spécification de MVP, construite sur un gabarit existant qui fournit DÉJÀ :
@@ -28,7 +28,7 @@ Règles :
   · {"kind":"required_when","field":"reference","when":{"field":"method","in":["wave"]},"message":"..."} — champ facultatif devenu obligatoire ;
   · {"kind":"date_order","start":"start_date","end":"end_date","message":"..."}.
   "message" = texte EXACT affiché à l'utilisateur quand la règle est violée.
-- "views" : écrans calculés (impayés, tableau de bord, rentabilité…) : route_segment (kebab-case, "" = accueil de l'organisation), description PRÉCISE du calcul, data-testid des éléments à vérifier, libellés des filtres.
+- "views" : écrans calculés (impayés, tableau de bord, rentabilité…) : route_segment (kebab-case, "" = accueil de l'organisation), description PRÉCISE du calcul, data-testid des éléments à vérifier, "labels" = libellés des champs de filtre UNIQUEMENT (jamais le titre de l'écran ; [] s'il n'y a pas de filtre).
 - Toute règle de calcul est sans ambiguïté : bornes incluses ou exclues, jour de référence (aujourd'hui inclus ?), arrondis, ordre de tri, que faire des cas limites (jour de repos, contrat terminé, montant partiel). Donne un exemple chiffré.
 - Chaque entité est utilisée par au moins une story ; chaque story liste les entités qu'elle touche.
 - 3 variantes du produit, exactement une "chosen": true, et la justification du choix.
@@ -72,7 +72,10 @@ N'invente AUCUN autre élément : un contrôle automatique refuse tout data-test
 - Listes : selectOption({ label: "<libellé de l'option>" }) — jamais la valeur technique.
 - Vérifie les valeurs affichées selon les conventions d'affichage du contrat (ex. « 15 000 FCFA » avec une espace ordinaire, dates JJ/MM/AAAA).
 - Dates : calcule-les par rapport à aujourd'hui dans le test (new Date()), jamais de date fixe qui deviendrait fausse avec le temps.
-- Erreurs métier : expect(page.getByRole("alert")).toContainText("<message exact du contrat>").
+- Erreurs métier : expect(page.getByTestId("form-error")).toContainText("<message exact du contrat>"). Jamais getByRole("alert").
+- États visuels (rouge/orange/vert) : toHaveAttribute("data-tone", "danger" | "warning" | "success"), jamais toHaveCSS.
+- Filtres d'une liste : page.getByTestId("<table>-filters").getByLabel("…", { exact: true }) ; total : getByTestId("<table>-total").
+- getByLabel toujours avec { exact: true }.
 - Titre de chaque test : « Sx — Étant donné …, quand …, alors … ». Au moins un test par story. Tests courts et indépendants.
 
 Interdits : test.only/skip/fixme, waitForTimeout, page.evaluate, URL absolues, process.env, imports autres que "@playwright/test", "./helpers", "node:crypto".
@@ -92,9 +95,9 @@ async function newWorkspace(page: Page): Promise<string> {
 async function addCustomer(page: Page, slug: string, name: string) {
   await page.goto(\`/app/\${slug}/clients\`);
   const form = page.getByTestId("customers-form");
-  await form.getByLabel("Nom").fill(name);
-  await form.getByLabel("Téléphone").fill("771234567");
-  await form.getByLabel("Statut").selectOption({ label: "Actif" });
+  await form.getByLabel("Nom", { exact: true }).fill(name);
+  await form.getByLabel("Téléphone", { exact: true }).fill("771234567");
+  await form.getByLabel("Statut", { exact: true }).selectOption({ label: "Actif" });
   await form.getByRole("button", { name: "Ajouter" }).click();
   await expect(page.getByTestId("customers-list")).toContainText(name);
 }
@@ -104,9 +107,9 @@ test("S2 — Étant donné un client, quand j'ajoute une commande de 15000 FCFA,
   await addCustomer(page, slug, "Aminata Sow");
   await page.goto(\`/app/\${slug}/commandes\`);
   const form = page.getByTestId("orders-form");
-  await form.getByLabel("Intitulé").fill("Boubou brodé");
-  await form.getByLabel("Client").selectOption({ label: "Aminata Sow" });
-  await form.getByLabel("Montant (FCFA)").fill("15000");
+  await form.getByLabel("Intitulé", { exact: true }).fill("Boubou brodé");
+  await form.getByLabel("Client", { exact: true }).selectOption({ label: "Aminata Sow" });
+  await form.getByLabel("Montant (FCFA)", { exact: true }).fill("15000");
   await form.getByRole("button", { name: "Ajouter" }).click();
   const row = page.getByTestId("orders-row").filter({ hasText: "Boubou brodé" });
   await expect(row).toContainText("15 000 FCFA");
@@ -251,7 +254,7 @@ export function renderSpec(spec: Spec, tests: TestFiles, migrationPath: string, 
  * Étape 2 : spec (Product Manager) → contrôles de cohérence (code) → migration SQL (code) →
  * tests d'acceptation (agent QA distinct) → contrôles des tests (code) → plan de tâches (code) → porte P2.
  */
-export async function runSpec(deps: SpecDeps, projectId: string, instruction?: string): Promise<"AWAITING_P2"> {
+export async function runSpec(deps: SpecDeps, projectId: string, instruction?: string, opts: { testsOnly?: boolean } = {}): Promise<"AWAITING_P2"> {
   const { db, notifier } = deps;
   const project = (await getProject(db, projectId)) as Project | null;
   if (!project) throw new Error(`Projet ${projectId} introuvable`);
@@ -260,15 +263,23 @@ export async function runSpec(deps: SpecDeps, projectId: string, instruction?: s
   const dossier = await latestArtifact(db, projectId, "dossier");
   if (!dossier) throw new Error("Aucun dossier d'opportunité : la spec part toujours du dossier validé.");
   const previous = await latestArtifact(db, projectId, "spec");
-  await notifier.send(`📝 Rédaction de la spec pour « ${project.title} »${instruction ? " avec ta consigne" : ""} (10 à 15 min).`);
+  // Mode « tests seuls » : la spec déjà validée est conservée telle quelle, seuls les tests sont réécrits (moins cher).
+  const frozen = opts.testsOnly && previous ? specSchema.safeParse((previous.content as { spec?: unknown }).spec) : null;
+  if (opts.testsOnly && !frozen?.success) throw new Error("Impossible de réécrire les tests seuls : aucune spec valide à reprendre.");
+  await notifier.send(
+    frozen?.success
+      ? `🧪 Réécriture des tests d'acceptation pour « ${project.title} » (spec v${previous!.version} conservée, 5 à 10 min).`
+      : `📝 Rédaction de la spec pour « ${project.title} »${instruction ? " avec ta consigne" : ""} (10 à 15 min).`,
+  );
 
   // Brouillon déjà validé et payé (relance après un échec des tests, sans nouvelle consigne) : on le réutilise.
   // Chaque exécution réussie enregistre exactement un brouillon et une spec : un brouillon plus récent = exécution interrompue.
-  const draft = instruction ? null : await latestArtifact(db, projectId, "spec_draft");
+  const draft = instruction || frozen?.success ? null : await latestArtifact(db, projectId, "spec_draft");
   const parsedDraft = draft && (!previous || draft.version > previous.version) ? specSchema.safeParse((draft.content as { spec?: unknown }).spec) : null;
   const reused = parsedDraft?.success && checkSpec(parsedDraft.data).length === 0 ? parsedDraft.data : null;
 
   const spec: Spec =
+    (frozen?.success ? frozen.data : null) ??
     reused ??
     (await structured(deps, specSchema, checkSpec, {
       agent: "spec",
@@ -286,7 +297,7 @@ export async function runSpec(deps: SpecDeps, projectId: string, instruction?: s
         .join("\n\n"),
       maxTokens: 32000,
     }));
-  if (!reused) await saveArtifact(db, projectId, "spec_draft", { spec }, spec.product_name);
+  if (!reused && !frozen?.success) await saveArtifact(db, projectId, "spec_draft", { spec }, spec.product_name);
 
   const migrationPath = migrationFileName(spec);
   const migration = generateMigration(spec);

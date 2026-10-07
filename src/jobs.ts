@@ -11,7 +11,7 @@ import { runSpec } from "./pipeline/spec.ts";
 /** File de travaux. Un seul travail par projet et par type (clé unique), aucune nouvelle tentative automatique : chaque essai coûte. */
 export interface Queue {
   enqueueResearch(projectId: string): Promise<void>;
-  enqueueSpec(projectId: string, instruction?: string): Promise<void>;
+  enqueueSpec(projectId: string, instruction?: string, testsOnly?: boolean): Promise<void>;
 }
 
 export class GraphileQueue implements Queue {
@@ -19,8 +19,8 @@ export class GraphileQueue implements Queue {
   async enqueueResearch(projectId: string): Promise<void> {
     await this.utils.addJob("research_idea", { projectId }, { maxAttempts: 1, jobKey: `research:${projectId}` });
   }
-  async enqueueSpec(projectId: string, instruction?: string): Promise<void> {
-    await this.utils.addJob("write_spec", { projectId, instruction: instruction ?? null }, { maxAttempts: 1, jobKey: `spec:${projectId}` });
+  async enqueueSpec(projectId: string, instruction?: string, testsOnly = false): Promise<void> {
+    await this.utils.addJob("write_spec", { projectId, instruction: instruction ?? null, testsOnly }, { maxAttempts: 1, jobKey: `spec:${projectId}` });
   }
 }
 
@@ -55,11 +55,11 @@ export function makeTaskList(deps: JobDeps): TaskList {
     }
   };
   const writeSpec: Task = async (payload) => {
-    const p = payload as { projectId?: unknown; instruction?: unknown };
+    const p = payload as { projectId?: unknown; instruction?: unknown; testsOnly?: unknown };
     if (typeof p?.projectId !== "string") throw new Error("payload invalide");
     const projectId = p.projectId;
     try {
-      await runSpec(deps, projectId, typeof p.instruction === "string" ? p.instruction : undefined);
+      await runSpec(deps, projectId, typeof p.instruction === "string" ? p.instruction : undefined, { testsOnly: p.testsOnly === true });
     } catch (error) {
       log.error({ err: error, projectId }, "échec de la spec");
       const project = await getProject(deps.db, projectId);

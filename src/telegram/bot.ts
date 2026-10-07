@@ -76,6 +76,7 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
     for (const f of r.files ?? []) await ctx.replyWithDocument(new InputFile(Buffer.from(f.content, "utf8"), f.name));
   });
   bot.command("retravailler", async (ctx) => reply(ctx, await cmd.cmdRetravailler(deps, ctx.match)));
+  bot.command("tests", async (ctx) => reply(ctx, await cmd.cmdTests(deps, ctx.match)));
   bot.command("cout", async (ctx) => reply(ctx, await cmd.cmdCout(deps)));
   bot.command("stop", async (ctx) => reply(ctx, await cmd.cmdStop(deps)));
   bot.command("reprendre", async (ctx) => reply(ctx, await cmd.cmdReprendre(deps)));

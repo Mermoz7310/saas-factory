@@ -210,7 +210,7 @@ describe("contrat d'interface", () => {
   it("est déduit de la spec par le code : routes, data-testid, libellés, options, messages d'erreur", () => {
     const orders = contract.entities.find((e) => e.table === "orders")!;
     expect(orders.route).toBe("/app/<slug>/commandes");
-    expect(orders.testids).toEqual({ form: "orders-form", list: "orders-list", row: "orders-row", empty: "orders-empty", edit_form: "orders-edit-form" });
+    expect(orders.testids).toEqual({ form: "orders-form", list: "orders-list", row: "orders-row", empty: "orders-empty", edit_form: "orders-edit-form", filters: "orders-filters", total: "orders-total" });
     expect(orders.fields.find((f) => f.name === "status")?.options?.[0]).toEqual({ value: "received", label: "Reçue" });
     expect(orders.fields.find((f) => f.name === "customer_id")?.ref).toEqual({ table: "customers", shows: "full_name (« Nom »)" });
     expect(orders.errors).toContainEqual({ constraint: "orders_required_when_2", message: "La référence Wave est obligatoire." });
@@ -253,6 +253,12 @@ describe("contrôles des tests d'acceptation générés", () => {
     expect(problems).toContain("data-testid « clients-list »");
     expect(problems).toContain("libellé « Nom complet du client »");
     expect(problems).toContain("selectOption({ value })");
+    const fragile = VALID_TEST_FILE.replace('await expect(page.getByTestId("orders-empty")).toBeVisible();', 'await expect(page.getByRole("alert")).toContainText("x");\n  await expect(page.getByTestId("due-count")).toHaveCSS("color", "red");');
+    const fp = checkTestFiles([{ path: "tests/acceptance/clients.spec.ts", content: fragile }], ["S1", "S2"], contract).join("\n");
+    expect(fp).toContain("getByRole(\"alert\") interdit");
+    expect(fp).toContain("toHaveCSS interdit");
+    const okConv = VALID_TEST_FILE.replace('await expect(page.getByTestId("orders-empty")).toBeVisible();', 'await expect(page.getByTestId("form-error")).toContainText("x");\n  await page.getByTestId("orders-filters").getByLabel("Statut", { exact: true }).selectOption({ label: "Reçue" });\n  await expect(page.getByTestId("orders-total")).toHaveAttribute("data-tone", "danger");');
+    expect(checkTestFiles([{ path: "tests/acceptance/clients.spec.ts", content: okConv }], ["S1", "S2"], contract)).toEqual([]);
     const tpl = VALID_TEST_FILE.replace("/clients`", "/members`").replace('getByLabel("Nom")', 'getByLabel("E-mail")');
     expect(checkTestFiles([{ path: "tests/acceptance/clients.spec.ts", content: tpl }], ["S1", "S2"], contract)).toEqual([]);
   });
@@ -318,10 +324,10 @@ async function projectInSpecifying(title: string) {
 }
 
 class FakeQueue implements Queue {
-  specs: { id: string; instruction?: string }[] = [];
+  specs: { id: string; instruction?: string; testsOnly?: boolean }[] = [];
   async enqueueResearch() {}
-  async enqueueSpec(id: string, instruction?: string) {
-    this.specs.push(instruction ? { id, instruction } : { id });
+  async enqueueSpec(id: string, instruction?: string, testsOnly?: boolean) {
+    this.specs.push(testsOnly ? { id, testsOnly } : instruction ? { id, instruction } : { id });
   }
 }
 
@@ -478,6 +484,28 @@ describe("porte P2 et commandes", () => {
     expect((await cmd.cmdRetravailler({ db, queue }, `${p.slug} Précise le calcul des sommes dues.`)).text).toContain("reprise");
     expect((await getProject(db, p.id))?.state).toBe("SPECIFYING");
     expect(queue.specs).toEqual([{ id: p.id, instruction: "Précise le calcul des sommes dues." }]);
+  });
+
+  it("/tests réécrit seulement les tests : spec conservée sans nouvel appel au Product Manager", async () => {
+    const { p, approvalId } = await awaitingP2();
+    const queue = new FakeQueue();
+    expect((await cmd.cmdTests({ db, queue }, p.slug)).text).toContain("réécriture");
+    expect(queue.specs).toEqual([{ id: p.id, testsOnly: true }]);
+    expect(await decideApproval(db, approvalId, "approve")).toEqual({ ok: false, reason: "Cette demande a déjà été traitée." });
+
+    const llm = new ScriptedLlm({ acceptance_tests: [...testsOk] });
+    expect(await runSpec({ db, llm, notifier: new NullNotifier() }, p.id, undefined, { testsOnly: true })).toBe("AWAITING_P2");
+    expect(llm.calls.map((c) => c.agent)).not.toContain("spec");
+    const spec = await latestArtifact(db, p.id, "spec");
+    expect(spec?.version).toBe(2);
+    expect((spec?.content as { spec: { product_name: string } }).spec.product_name).toBe("TailorOS");
+
+    // un échec pendant la réécriture des tests se relance en mode « tests seuls »
+    await cmd.cmdTests({ db, queue }, p.slug);
+    await transition(db, p.id, "SPECIFYING", "FAILED", "system", "erreur");
+    const q2 = new FakeQueue();
+    expect((await cmd.cmdRelancer({ db, queue: q2 }, p.slug)).text).toContain("tests");
+    expect(q2.specs).toEqual([{ id: p.id, testsOnly: true }]);
   });
 
   it("/relancer reprend une spec en échec", async () => {

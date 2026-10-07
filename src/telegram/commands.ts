@@ -15,6 +15,7 @@ export const HELP = [
   "/dossier <projet> — dossier complet d'un projet",
   "/spec <projet> — spec, migration et tests d'un projet",
   "/retravailler <projet> <consigne> — refaire la spec avec ta consigne",
+  "/tests <projet> — réécrire seulement les tests d'acceptation (spec conservée)",
   "/cout — dépenses IA du jour",
   "/relancer <projet> — relancer une étape en échec",
   "/stop — arrêt d'urgence (tout s'arrête avant le prochain appel IA)",
@@ -93,9 +94,16 @@ export async function cmdRelancer(deps: CommandDeps, slug: string): Promise<Repl
     return { text: `🔁 Recherche relancée pour ${project.slug}.` };
   }
   if (from === "SPECIFYING") {
-    await transition(deps.db, project.id, "FAILED", "SPECIFYING", "user", "relance manuelle");
-    await deps.queue.enqueueSpec(project.id);
-    return { text: `🔁 Rédaction de la spec relancée pour ${project.slug}.` };
+    // Si l'étape échouée ne réécrivait que les tests, on relance la même chose (la spec reste conservée).
+    const { rows: entered } = await deps.db.query<{ reason: string | null }>(
+      "select reason from project_events where project_id = $1 and to_state = 'SPECIFYING' order by id desc limit 1",
+      [project.id],
+    );
+    const testsOnly = entered[0]?.reason === TESTS_ONLY_REASON;
+    await transition(deps.db, project.id, "FAILED", "SPECIFYING", "user", testsOnly ? TESTS_ONLY_REASON : "relance manuelle");
+    if (testsOnly) await deps.queue.enqueueSpec(project.id, undefined, true);
+    else await deps.queue.enqueueSpec(project.id);
+    return { text: testsOnly ? `🔁 Réécriture des tests relancée pour ${project.slug}.` : `🔁 Rédaction de la spec relancée pour ${project.slug}.` };
   }
   return { text: "Cette étape ne peut pas être relancée automatiquement." };
 }
@@ -142,6 +150,21 @@ export async function cmdRetravailler(deps: CommandDeps, args: string): Promise<
   });
   await deps.queue.enqueueSpec(project.id, m[2]!.trim());
   return { text: `✏️ Spec en cours de reprise pour ${project.slug} avec ta consigne. Les anciens boutons P2 ne sont plus valables.` };
+}
+
+const TESTS_ONLY_REASON = "réécriture des tests seuls";
+
+/** Réécrit les tests d'acceptation en gardant la spec en attente de P2 (ex. après une évolution des conventions de l'usine). */
+export async function cmdTests(deps: CommandDeps, slug: string): Promise<Reply> {
+  const project = slug.trim() ? await getProject(deps.db, slug.trim()) : null;
+  if (!project) return { text: "Projet introuvable. Tape /projets pour voir les noms." };
+  if (project.state !== "AWAITING_P2") return { text: `Impossible : ${project.slug} est « ${STATE_LABEL[project.state]} » (il faut une spec en attente de validation).` };
+  await inTransaction(deps.db, async (c) => {
+    await cancelPending(c, project.id, "P2");
+    await transitionIn(c, project.id, "AWAITING_P2", "SPECIFYING", "user", TESTS_ONLY_REASON);
+  });
+  await deps.queue.enqueueSpec(project.id, undefined, true);
+  return { text: `🧪 Tests d'acceptation en cours de réécriture pour ${project.slug} (spec conservée). Les anciens boutons P2 ne sont plus valables.` };
 }
 
 /** Bouton d'une porte : « ap:<id>:<choix> ». */
