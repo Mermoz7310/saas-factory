@@ -2,6 +2,9 @@ import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import { log } from "../log.ts";
 import type { Button, Notifier } from "../notify.ts";
 import * as cmd from "./commands.ts";
+import * as maintain from "./maintain-commands.ts";
+
+const HELP = cmd.HELP + maintain.MAINTAIN_HELP;
 
 const MAX_TEXT = 4000;
 const clip = (t: string) => (t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT - 20)}\n… (tronqué)` : t);
@@ -55,7 +58,7 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
       await ctx.reply(`👋 Ton identifiant Telegram est ${ctx.from?.id}.\nMets-le dans TELEGRAM_OWNER_ID sur le serveur, puis redémarre l'usine.`);
       return;
     }
-    if (ctx.from?.id === ownerId) await ctx.reply(cmd.HELP);
+    if (ctx.from?.id === ownerId) await ctx.reply(HELP);
   });
 
   bot.use(async (ctx, next) => {
@@ -66,7 +69,7 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
     await next();
   });
 
-  bot.command(["aide", "help"], (ctx) => ctx.reply(cmd.HELP));
+  bot.command(["aide", "help"], (ctx) => ctx.reply(HELP));
   bot.command("idee", async (ctx) => reply(ctx, await cmd.cmdIdee(deps, ctx.match)));
   bot.command("projets", async (ctx) => reply(ctx, await cmd.cmdProjets(deps)));
   bot.command("dossier", async (ctx) => reply(ctx, await cmd.cmdDossier(deps, ctx.match)));
@@ -81,6 +84,11 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
   bot.command("stop", async (ctx) => reply(ctx, await cmd.cmdStop(deps)));
   bot.command("reprendre", async (ctx) => reply(ctx, await cmd.cmdReprendre(deps)));
   bot.command("relancer", async (ctx) => reply(ctx, await cmd.cmdRelancer(deps, ctx.match)));
+  bot.command("apps", async (ctx) => reply(ctx, await maintain.cmdApps(deps)));
+  bot.command("connecter", async (ctx) => reply(ctx, await maintain.cmdConnecter(deps, ctx.match)));
+  bot.command("autonomie", async (ctx) => reply(ctx, await maintain.cmdAutonomie(deps, ctx.match)));
+  bot.command("analyser", async (ctx) => reply(ctx, await maintain.cmdAnalyser(deps, ctx.match)));
+  bot.command("journal", async (ctx) => reply(ctx, await maintain.cmdJournal(deps, ctx.match)));
 
   bot.on("callback_query:data", async (ctx) => {
     const res = await cmd.onApprovalButton(deps, ctx.callbackQuery.data);

@@ -2,11 +2,11 @@ import type { Db } from "./db/pool.ts";
 
 export class BudgetExceeded extends Error {
   constructor(
-    readonly scope: "daily" | "project",
+    readonly scope: "daily" | "monthly" | "project",
     readonly spentUsd: number,
     readonly limitUsd: number,
   ) {
-    super(`Budget ${scope === "daily" ? "journalier" : "du projet"} atteint : ${spentUsd.toFixed(2)} $ / ${limitUsd.toFixed(2)} $`);
+    super(`Budget ${scope === "daily" ? "journalier" : scope === "monthly" ? "mensuel" : "du projet"} atteint : ${spentUsd.toFixed(2)} $ / ${limitUsd.toFixed(2)} $`);
   }
 }
 
@@ -16,7 +16,7 @@ export class FactoryPaused extends Error {
   }
 }
 
-async function setting(db: Db, key: string): Promise<unknown> {
+export async function setting(db: Db, key: string): Promise<unknown> {
   const { rows } = await db.query<{ value: unknown }>("select value from settings where key = $1", [key]);
   return rows[0]?.value;
 }
@@ -36,6 +36,13 @@ export async function spentTodayUsd(db: Db): Promise<number> {
   return rows[0]!.s;
 }
 
+export async function spentThisMonthUsd(db: Db): Promise<number> {
+  const { rows } = await db.query<{ s: number }>(
+    "select coalesce(sum(cost_usd), 0) as s from agent_runs where created_at >= date_trunc('month', now() at time zone 'Europe/Brussels') at time zone 'Europe/Brussels'",
+  );
+  return rows[0]!.s;
+}
+
 export async function spentOnProjectUsd(db: Db, projectId: string): Promise<number> {
   const { rows } = await db.query<{ s: number }>("select coalesce(sum(cost_usd), 0) as s from agent_runs where project_id = $1", [projectId]);
   return rows[0]!.s;
@@ -51,6 +58,13 @@ export async function assertCanSpend(db: Db, projectId: string | null, worstCase
   const daily = Number(await setting(db, "daily_budget_usd"));
   const today = await spentTodayUsd(db);
   if (today + worstCaseUsd > daily) throw new BudgetExceeded("daily", today, daily);
+
+  const monthlyRaw = await setting(db, "monthly_budget_usd");
+  if (monthlyRaw !== undefined) {
+    const monthly = Number(monthlyRaw);
+    const month = await spentThisMonthUsd(db);
+    if (month + worstCaseUsd > monthly) throw new BudgetExceeded("monthly", month, monthly);
+  }
 
   if (projectId) {
     const { rows } = await db.query<{ budget_usd: number }>("select budget_usd from projects where id = $1", [projectId]);
