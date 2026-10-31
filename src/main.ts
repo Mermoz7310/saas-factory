@@ -34,7 +34,7 @@ if (config.ANTHROPIC_API_KEY) {
       timeout: 20 * 60_000,
       ...(config.ANTHROPIC_WORKSPACE_ID ? { defaultHeaders: { "anthropic-workspace-id": config.ANTHROPIC_WORKSPACE_ID } } : {}),
     }).messages);
-  runner = await run({ pgPool: db, concurrency: config.WORKER_CONCURRENCY, noHandleSignals: true, taskList: makeTaskList({ db, llm, notifier }) });
+  runner = await run({ pgPool: db, concurrency: config.WORKER_CONCURRENCY, noHandleSignals: true, taskList: makeTaskList({ db, llm, notifier, github }) });
   log.info(config.ANTHROPIC_WORKSPACE_ID ? `travailleur démarré (espace ${config.ANTHROPIC_WORKSPACE_ID})` : "travailleur démarré");
 } else {
   log.warn("ANTHROPIC_API_KEY absente : les idées sont enregistrées mais aucune recherche ne démarre");

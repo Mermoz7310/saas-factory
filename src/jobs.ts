@@ -7,11 +7,14 @@ import { log } from "./log.ts";
 import type { Notifier } from "./notify.ts";
 import { runDiscovery } from "./pipeline/discovery.ts";
 import { runSpec } from "./pipeline/spec.ts";
+import type { GitHubApp } from "./integrations/github.ts";
+import { runAnalysis } from "./maintain/analysis.ts";
 
 /** File de travaux. Un seul travail par projet et par type (clé unique), aucune nouvelle tentative automatique : chaque essai coûte. */
 export interface Queue {
   enqueueResearch(projectId: string): Promise<void>;
   enqueueSpec(projectId: string, instruction?: string, testsOnly?: boolean): Promise<void>;
+  enqueueAnalysis(missionId: string): Promise<void>;
 }
 
 export class GraphileQueue implements Queue {
@@ -22,9 +25,12 @@ export class GraphileQueue implements Queue {
   async enqueueSpec(projectId: string, instruction?: string, testsOnly = false): Promise<void> {
     await this.utils.addJob("write_spec", { projectId, instruction: instruction ?? null, testsOnly }, { maxAttempts: 1, jobKey: `spec:${projectId}` });
   }
+  async enqueueAnalysis(missionId: string): Promise<void> {
+    await this.utils.addJob("analyze_app", { missionId }, { maxAttempts: 1, jobKey: `analysis:${missionId}` });
+  }
 }
 
-export type JobDeps = { db: Db; llm: Llm; notifier: Notifier };
+export type JobDeps = { db: Db; llm: Llm; notifier: Notifier; github?: GitHubApp | null };
 
 /** Explique une erreur en une ligne lisible pour Telegram. */
 export function explain(error: unknown): string {
@@ -67,5 +73,10 @@ export function makeTaskList(deps: JobDeps): TaskList {
       await deps.notifier.send(`❌ Spec interrompue pour « ${project?.title ?? projectId} ».\n${explain(error)}\nRelancer : /relancer ${project?.slug ?? ""}`);
     }
   };
-  return { research_idea: researchIdea, write_spec: writeSpec };
+  const analyzeApp: Task = async (payload) => {
+    const missionId = (payload as { missionId?: unknown })?.missionId;
+    if (typeof missionId !== "string") throw new Error("payload invalide");
+    await runAnalysis({ db: deps.db, llm: deps.llm, notifier: deps.notifier, github: deps.github ?? null }, missionId);
+  };
+  return { research_idea: researchIdea, write_spec: writeSpec, analyze_app: analyzeApp };
 }
