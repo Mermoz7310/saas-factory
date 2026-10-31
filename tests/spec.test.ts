@@ -329,6 +329,7 @@ class FakeQueue implements Queue {
   async enqueueSpec(id: string, instruction?: string, testsOnly?: boolean) {
     this.specs.push(testsOnly ? { id, testsOnly } : instruction ? { id, instruction } : { id });
   }
+  async enqueueAnalysis() {}
 }
 
 describe("étape 2 de bout en bout (modèles simulés)", () => {

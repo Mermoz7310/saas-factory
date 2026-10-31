@@ -11,11 +11,12 @@ export const MAINTAIN_HELP = [
   "/connecter <nom> <proprietaire/depot> — connecter un SaaS (niveau 0, lecture seule)",
   `/autonomie <nom> <0-${MAX_AVAILABLE_LEVEL}> — changer le niveau d'autonomie`,
   "/verifier <nom> — vérifier l'accès GitHub en lecture seule et relever le dernier commit",
-  "/analyser <nom> — demander une analyse (contrôlée par les règles)",
+  "/analyser <nom> — analyser le code (lecture seule, rapport sur Telegram)",
+  "/rapport <nom> — renvoyer le dernier rapport d'analyse",
   "/journal [nom] — dernières décisions du journal d'audit",
 ].join("\n");
 
-/** Coût maximal réservé pour une analyse de dépôt (Sonnet, ~300 000 jetons lus) : sert au contrôle du plafond par mission. */
+/** Coût maximal réservé pour une analyse de dépôt (Sonnet, ~150 000 jetons lus) : sert au contrôle du plafond par mission. */
 export const ANALYSIS_ESTIMATE_USD = 1;
 
 const errorText = (e: unknown) => `⚠️ ${e instanceof Error ? e.message : String(e)}`;
@@ -76,7 +77,33 @@ export async function cmdAnalyser(deps: CommandDeps, slug: string): Promise<Repl
   const decision = await authorize(deps.db, { app: name, action: "analysis.run", actor: "owner", estimatedCostUsd: ANALYSIS_ESTIMATE_USD });
   if (decision.effect === "deny") return { text: `⛔ Refusé : ${decision.reason}.\n(Inscrit au journal : /journal)` };
   if (decision.effect === "approve") return { text: `✋ ${decision.reason}.` };
-  return { text: `✅ Autorisé pour ${decision.app?.slug}.\nL'analyse elle-même arrive au Sprint 2 : rien n'a été lancé ni facturé.` };
+  if (!deps.github) return { text: "GitHub App pas encore configurée sur le serveur : l'analyse ne peut pas lire le dépôt." };
+  const app = decision.app!;
+  let missionId: string;
+  try {
+    const { rows } = await deps.db.query<{ id: string }>(
+      "insert into missions (app_id, kind, request, source) values ($1, 'analysis', $2, 'telegram') returning id",
+      [app.id, `/analyser ${app.slug}`],
+    );
+    missionId = rows[0]!.id;
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") return { text: `⏳ Une analyse de ${app.slug} est déjà en cours.` };
+    throw error;
+  }
+  await deps.queue.enqueueAnalysis(missionId);
+  return { text: `🔎 Analyse de ${app.slug} lancée (lecture seule, plafond ${ANALYSIS_ESTIMATE_USD.toFixed(2)} $).\nLe rapport arrive ici dans quelques minutes.` };
+}
+
+export async function cmdRapport(deps: CommandDeps, slug: string): Promise<Reply> {
+  const app = slug.trim() ? await getApp(deps.db, slug) : null;
+  if (!app) return { text: "Usage : /rapport <nom>\nTape /apps pour voir les noms." };
+  const { rows } = await deps.db.query<{ report_md: string; commit_sha: string; ended_at: Date }>(
+    "select report_md, commit_sha, ended_at from missions where app_id = $1 and status = 'succeeded' and report_md is not null order by ended_at desc limit 1",
+    [app.id],
+  );
+  const r = rows[0];
+  if (!r) return { text: `Pas encore de rapport pour ${app.slug}. Lance /analyser ${app.slug}` };
+  return { text: `📋 Dernier rapport de ${app.slug} (${fmtDate(r.ended_at)})`, file: { name: `analyse-${app.slug}-${r.commit_sha.slice(0, 7)}.md`, content: r.report_md } };
 }
 
 const DECISION_ICON: Record<NonNullable<AuditRow["decision"]>, string> = {

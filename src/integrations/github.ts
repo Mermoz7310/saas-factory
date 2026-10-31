@@ -15,6 +15,8 @@ export type Permissions = Record<string, string>;
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{
   status: number;
   json(): Promise<unknown>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
+  headers?: { get(name: string): string | null };
 }>;
 
 export class GitHubError extends Error {
@@ -119,7 +121,24 @@ export class GitHubApp {
     if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) throw new GitHubError("Réponse GitHub inattendue (commit)", c.status);
     return { defaultBranch: info.default_branch, commitSha: sha, archived: info.archived === true };
   }
+
+  /** Archive .tar.gz du dépôt à ce commit précis (lecture seule ; GitHub redirige vers codeload). */
+  async tarball(token: string, repo: string, sha: string): Promise<Buffer> {
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new GitHubError("Commit invalide.", 400);
+    const res = await this.fetchImpl(`${API}/repos/${repo}/tarball/${sha}`, {
+      method: "GET",
+      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "saas-factory" },
+    });
+    if (res.status !== 200 || !res.arrayBuffer) throw new GitHubError(`Archive de ${repo} illisible (${res.status}).`, res.status);
+    const declared = Number(res.headers?.get("content-length") ?? 0);
+    if (declared > MAX_TARBALL_BYTES) throw new GitHubError(`Dépôt trop volumineux (${Math.round(declared / 1048576)} Mo).`, 413);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_TARBALL_BYTES) throw new GitHubError(`Dépôt trop volumineux (${Math.round(buf.length / 1048576)} Mo).`, 413);
+    return buf;
+  }
 }
+
+export const MAX_TARBALL_BYTES = 40 * 1024 * 1024;
 
 /** Construit le client à partir de la configuration, ou null si la GitHub App n'est pas encore configurée. */
 export function githubFromConfig(appId: string | undefined, privateKeyB64: string | undefined): GitHubApp | null {

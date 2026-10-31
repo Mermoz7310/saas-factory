@@ -31,6 +31,7 @@ class FakeQueue implements Queue {
   async enqueueSpec(id: string, instruction?: string) {
     this.specs.push(instruction ? { id, instruction } : { id });
   }
+  async enqueueAnalysis() {}
 }
 
 describe("commandes Telegram", () => {

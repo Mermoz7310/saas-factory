@@ -64,7 +64,7 @@ class FakeGitHub {
 
 let db: Db;
 let drop: () => Promise<void>;
-const noQueue: Queue = { enqueueResearch: async () => undefined, enqueueSpec: async () => undefined };
+const noQueue: Queue = { enqueueResearch: async () => undefined, enqueueSpec: async () => undefined, enqueueAnalysis: async () => undefined };
 
 beforeAll(async () => {
   ({ db, drop } = await freshDb("github"));

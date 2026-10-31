@@ -89,6 +89,7 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
   bot.command("autonomie", async (ctx) => reply(ctx, await maintain.cmdAutonomie(deps, ctx.match)));
   bot.command("verifier", async (ctx) => reply(ctx, await maintain.cmdVerifier(deps, ctx.match)));
   bot.command("analyser", async (ctx) => reply(ctx, await maintain.cmdAnalyser(deps, ctx.match)));
+  bot.command("rapport", async (ctx) => reply(ctx, await maintain.cmdRapport(deps, ctx.match)));
   bot.command("journal", async (ctx) => reply(ctx, await maintain.cmdJournal(deps, ctx.match)));
 
   bot.on("callback_query:data", async (ctx) => {

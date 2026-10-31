@@ -26,7 +26,7 @@ beforeEach(async () => {
   await db.query("update settings set value = '15' where key = 'daily_budget_usd'");
 });
 
-const noQueue: Queue = { enqueueResearch: async () => undefined, enqueueSpec: async () => undefined };
+const noQueue: Queue = { enqueueResearch: async () => undefined, enqueueSpec: async () => undefined, enqueueAnalysis: async () => undefined };
 const deps = () => ({ db, queue: noQueue });
 
 async function lastAudit() {
