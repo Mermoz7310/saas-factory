@@ -7,6 +7,10 @@ const schema = z.object({
   ANTHROPIC_WORKSPACE_ID: z.string().regex(/^wrkspc_[A-Za-z0-9]+$/, "identifiant d'espace de travail invalide (wrkspc_…)").optional(),
   TELEGRAM_BOT_TOKEN: z.string().regex(/^\d+:[\w-]{30,}$/, "jeton Telegram invalide").optional(),
   TELEGRAM_OWNER_ID: z.coerce.number().int().positive().optional(),
+  /** GitHub App de l'usine (lecture seule). Absente : le mode Entretenir ne lit aucun dépôt. */
+  GITHUB_APP_ID: z.string().regex(/^\d+$/, "GITHUB_APP_ID doit être un nombre").optional(),
+  /** Clé privée .pem de la GitHub App, encodée en base64 sur une ligne. */
+  GITHUB_APP_PRIVATE_KEY_B64: z.string().regex(/^[A-Za-z0-9+/=]{100,}$/, "clé privée GitHub invalide (base64 attendu)").optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });

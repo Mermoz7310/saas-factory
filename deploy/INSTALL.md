@@ -67,3 +67,29 @@ cd /opt/saas-factory && git pull && docker compose up -d --build
 
 3 conteneurs limités à 1,25 processeur et 1 Go de mémoire au total : Recovia et EduConnect gardent la priorité.
 Sauvegarde automatique de la base chaque nuit à 3h dans `/opt/saas-factory/backups` (14 jours).
+
+## GitHub App de l'usine (mode Entretenir, lecture seule)
+
+Durée : 10 minutes. Elle permet à l'usine de **lire** tes dépôts, un par un, sans jamais pouvoir les modifier.
+
+1. Ouvre https://github.com/settings/apps/new (connecté en **Mermoz7310**).
+2. Remplis :
+   - **GitHub App name** : `factory221-lecture` (si le nom est pris, ajoute un chiffre)
+   - **Homepage URL** : `https://221belcode.com`
+   - **Webhook** : décoche **Active**
+3. **Repository permissions** — mets **Read-only** sur : `Contents`, `Actions`, `Checks`, `Commit statuses` (`Metadata` passe en Read-only tout seul). **Rien d'autre**, et surtout aucun « Read and write » : l'usine refuse une App qui peut écrire.
+4. **Where can this GitHub App be installed?** : **Only on this account**. Clique sur **Create GitHub App**.
+5. Sur la page de l'App : note l'**App ID** (un nombre), puis en bas **Generate a private key** : un fichier `.pem` se télécharge.
+6. Menu de gauche **Install App** → **Install** → **Only select repositories** → choisis `versa-flotte` (et les autres dépôts pilotes) → **Install**.
+7. Sur le serveur, colle la clé (ouvre le `.pem` avec le Bloc-notes, copie tout, y compris les lignes `-----BEGIN` et `-----END`) :
+
+```bash
+# À LANCER — sur le serveur, en SSH. Remplace la ligne du milieu par le contenu complet du fichier .pem
+cat > /root/factory-github.pem <<'CLE'
+COLLE ICI TOUT LE CONTENU DU FICHIER .pem
+CLE
+cd /opt/saas-factory && bash deploy/github-app.sh
+```
+
+Le script demande l'App ID, enregistre la clé dans `.env`, efface le fichier `.pem` et redémarre l'usine.
+8. Sur Telegram : `/verifier versa-flotte` → attendu : « 🔎 Dépôt lisible en lecture seule : main @ abc1234 ».
