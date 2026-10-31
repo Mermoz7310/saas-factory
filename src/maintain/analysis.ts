@@ -9,6 +9,7 @@ import { pickTier } from "../llm/router.ts";
 import type { Notifier } from "../notify.ts";
 import type { App } from "./apps.ts";
 import { authorize } from "./policy.ts";
+import { isTestOrExample } from "./secrets.ts";
 import { buildSnapshot, readTar, type Snapshot } from "./snapshot.ts";
 
 export const ANALYSIS_PROMPT_VERSION = "analysis-v1";
@@ -101,9 +102,9 @@ type StoredFinding = {
 
 export function secretFindings(snap: Snapshot): StoredFinding[] {
   return snap.secrets.map((s) => ({
-    severity: s.hits.some((h) => h.kind === "clé privée") || snap.envFiles.includes(s.path) ? "critical" : "high",
+    severity: isTestOrExample(s.path) ? "low" : s.hits.some((h) => h.kind === "clé privée") || snap.envFiles.includes(s.path) ? "critical" : "high",
     category: "security",
-    title: `Secret en clair dans le dépôt (${[...new Set(s.hits.map((h) => h.kind))].join(", ")})`,
+    title: `Secret en clair dans le dépôt (${[...new Set(s.hits.map((h) => h.kind))].join(", ")})${isTestOrExample(s.path) ? " — fichier de test, probablement factice" : ""}`,
     file: s.path,
     evidence: `ligne${s.hits.length > 1 ? "s" : ""} ${s.hits.map((h) => h.line).join(", ")} (valeur masquée)`,
     recommendation: "Révoque et régénère ce secret chez le fournisseur, retire-le du dépôt et de son historique, puis place-le dans les variables d'environnement.",

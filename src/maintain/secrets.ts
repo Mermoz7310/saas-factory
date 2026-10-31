@@ -15,10 +15,10 @@ const PATTERNS: { name: string; re: RegExp }[] = [
   { name: "clé Google", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   { name: "jeton Telegram", re: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   { name: "jeton JWT", re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
-  { name: "mot de passe dans une URL", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]+:[^\s@'"/]{6,}@/gi },
+  { name: "mot de passe dans une URL", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]+:(?![$<{%])[^\s@'"/$<{]{6,}@/gi },
   {
     name: "secret affecté en clair",
-    re: /\b[A-Za-z0-9_]*(?:secret|password|passwd|pwd|api[_-]?key|token|private[_-]?key)[A-Za-z0-9_]*\s*[:=]\s*["'][^"'\s]{8,}["']/gi,
+    re: /\b[A-Za-z0-9_]*(?:secret|password|passwd|pwd|api[_-]?key|token|private[_-]?key)[A-Za-z0-9_]*\s*[:=]\s*["'](?![$<{%])[^"'\s]{8,}["']/gi,
   },
 ];
 
@@ -39,6 +39,11 @@ export function maskSecrets(text: string): { text: string; hits: SecretHit[] } {
     });
   }
   return { text: out, hits };
+}
+
+/** Tests, exemples et données factices : un secret y est presque toujours un faux, signalé en priorité basse. */
+export function isTestOrExample(path: string): boolean {
+  return /(^|\/)(tests?|__tests__|fixtures?|spec|mocks?|examples?)\/|\.(test|spec)\.[a-z]+$|\.(example|sample|template)$/i.test(path);
 }
 
 /** Fichiers d'environnement réels (pas les modèles .example). */
