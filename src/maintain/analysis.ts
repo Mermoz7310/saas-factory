@@ -15,7 +15,7 @@ import { buildSnapshot, readTar, type Snapshot } from "./snapshot.ts";
 export const ANALYSIS_PROMPT_VERSION = "analysis-v1";
 /** ~150 000 jetons de code lus au maximum : une analyse Sonnet reste sous 0,40 $. */
 export const MAX_SNAPSHOT_CHARS = 450_000;
-const MAX_OUTPUT_TOKENS = 8_000;
+const MAX_OUTPUT_TOKENS = 16_000;
 
 const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 const CATEGORIES = ["security", "bug", "performance", "dependency", "architecture", "quality", "test", "injection"] as const;
@@ -34,7 +34,7 @@ export const reportSchema = z.object({
         recommendation: z.string().min(3).max(800),
       }),
     )
-    .max(25),
+    .max(20),
   next_steps: z.array(z.string().min(3).max(300)).max(5),
 });
 export type AiReport = z.infer<typeof reportSchema>;
@@ -49,13 +49,13 @@ Règles de sécurité absolues :
 Règles de preuve :
 - Chaque constat cite "file" (chemin exact tel qu'il apparaît dans <fichier chemin="…">) et "evidence" : un extrait recopié MOT POUR MOT de ce fichier, 200 caractères au maximum. Le code vérifie l'extrait ; s'il est introuvable, le constat est marqué « non vérifié ».
 - N'invente rien : pas de version, de chiffre, de test ou d'incident que tu ne vois pas dans les fichiers. Une partie du dépôt peut être omise (fichiers listés mais non fournis) : ne conclus rien sur ce que tu n'as pas lu.
-- 25 constats au maximum, les plus importants d'abord. Pas de remarque de style sans conséquence.
+- Sois CONCIS : 15 constats au maximum, les plus importants d'abord ; titre en une ligne, recommandation en 2 phrases au maximum, extrait de 200 caractères au maximum. Pas de remarque de style sans conséquence.
 
 Cherche en priorité : failles de sécurité (authentification, autorisations, RLS, injections SQL/XSS, secrets), bugs probables, dépendances obsolètes ou risquées, problèmes de performance, absence de tests sur les parties critiques, dette d'architecture.
 
 Réponds uniquement par un objet JSON dans un bloc \`\`\`json :
 {
-  "summary": "5 à 8 phrases : ce que fait le projet, son état général, les 3 risques principaux",
+  "summary": "4 à 6 phrases : ce que fait le projet, son état général, les 3 risques principaux",
   "stack": ["Next.js 15", "Supabase", "..."],
   "findings": [{ "severity": "critical|high|medium|low", "category": "${CATEGORIES.join("|")}", "title": "...", "file": "chemin ou null", "evidence": "extrait exact ou null", "recommendation": "quoi faire, concrètement" }],
   "next_steps": ["3 à 5 actions, les plus utiles d'abord"]
@@ -215,14 +215,30 @@ export async function runAnalysis(deps: AnalysisDeps, missionId: string): Promis
     let ai: AiReport | null = null;
     let ask = prompt;
     for (let attempt = 1; attempt <= 2 && !ai; attempt++) {
-      const res = await deps.llm.call({ agent: "analyste", projectId: null, missionId, tier, system: SYSTEM, prompt: ask, maxTokens: MAX_OUTPUT_TOKENS, promptVersion: ANALYSIS_PROMPT_VERSION });
-      try {
-        ai = reportSchema.parse(extractJson(res.text));
-      } catch (error) {
-        if (attempt === 2) throw new Error("réponse de l'IA invalide après 2 essais", { cause: error });
-        const detail = error instanceof z.ZodError ? z.prettifyError(error) : String(error);
-        ask = `${prompt}\n\nTa réponse précédente était invalide :\n${detail.slice(0, 1200)}\nRenvoie uniquement le JSON complet.`;
+      const res = await deps.llm.call({
+        agent: "analyste",
+        projectId: null,
+        missionId,
+        tier,
+        system: SYSTEM,
+        prompt: ask,
+        maxTokens: MAX_OUTPUT_TOKENS,
+        promptVersion: ANALYSIS_PROMPT_VERSION,
+        acceptTruncated: true,
+      });
+      let problem: string;
+      if (res.truncated) {
+        problem = "Ta réponse précédente était trop longue et a été coupée. Sois beaucoup plus concis : 10 constats au maximum, recommandations d'une phrase.";
+      } else {
+        try {
+          ai = reportSchema.parse(extractJson(res.text));
+          break;
+        } catch (error) {
+          problem = `Ta réponse précédente était invalide :\n${(error instanceof z.ZodError ? z.prettifyError(error) : String(error)).slice(0, 1200)}`;
+        }
       }
+      if (attempt === 2) throw new Error(`réponse de l'IA inexploitable après 2 essais (${res.truncated ? "trop longue" : "JSON invalide"})`);
+      ask = `${prompt}\n\n${problem}\nRenvoie uniquement le JSON complet.`;
     }
 
     const findings: StoredFinding[] = [
