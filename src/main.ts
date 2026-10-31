@@ -3,6 +3,7 @@ import { makeWorkerUtils, run } from "graphile-worker";
 import { loadConfig } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { createPool } from "./db/pool.ts";
+import { githubFromConfig } from "./integrations/github.ts";
 import { GraphileQueue, makeTaskList } from "./jobs.ts";
 import { ClaudeLlm } from "./llm/client.ts";
 import { log } from "./log.ts";
@@ -17,7 +18,10 @@ const workerUtils = await makeWorkerUtils({ pgPool: db });
 await workerUtils.migrate();
 const queue = new GraphileQueue(workerUtils);
 
-const bot = config.TELEGRAM_BOT_TOKEN ? createBot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_OWNER_ID, { db, queue }) : null;
+const github = githubFromConfig(config.GITHUB_APP_ID, config.GITHUB_APP_PRIVATE_KEY_B64);
+if (!github) log.warn("GitHub App non configurée : le mode Entretenir ne lit aucun dépôt");
+
+const bot = config.TELEGRAM_BOT_TOKEN ? createBot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_OWNER_ID, { db, queue, github }) : null;
 const notifier: Notifier = bot && config.TELEGRAM_OWNER_ID ? new TelegramNotifier(bot, config.TELEGRAM_OWNER_ID) : new NullNotifier();
 if (!bot) log.warn("TELEGRAM_BOT_TOKEN absent : bot désactivé");
 else if (!config.TELEGRAM_OWNER_ID) log.warn("TELEGRAM_OWNER_ID absent : envoie /start au bot pour obtenir ton identifiant");

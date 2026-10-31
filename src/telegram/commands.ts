@@ -1,11 +1,13 @@
-import { setPaused, isPaused, spentTodayUsd } from "../budget.ts";
+import { audit } from "../audit.ts";
+import { setPaused, isPaused, setting, spentThisMonthUsd, spentTodayUsd } from "../budget.ts";
 import type { Db } from "../db/pool.ts";
 import { cancelPending, decide, type Choice } from "../domain/approvals.ts";
 import { createProject, getProject, inTransaction, latestArtifact, listActiveProjects, transition, transitionIn } from "../domain/projects.ts";
 import { STATE_LABEL } from "../domain/states.ts";
+import type { GitHubApp } from "../integrations/github.ts";
 import type { Queue } from "../jobs.ts";
 
-export type CommandDeps = { db: Db; queue: Queue };
+export type CommandDeps = { db: Db; queue: Queue; github?: GitHubApp | null };
 export type Reply = { text: string; file?: { name: string; content: string } };
 
 export const HELP = [
@@ -21,6 +23,7 @@ export const HELP = [
   "/stop — arrêt d'urgence (tout s'arrête avant le prochain appel IA)",
   "/reprendre — relancer l'usine",
 ].join("\n");
+
 
 const usd = (n: number) => `${n.toFixed(2)} $`;
 
@@ -58,7 +61,9 @@ export async function cmdCout(deps: CommandDeps): Promise<Reply> {
      from projects p join agent_runs r on r.project_id = p.id
      group by p.id order by spent desc limit 5`,
   );
-  const lines = [`💰 Aujourd'hui : ${usd(today)} / ${usd(budget[0]?.v ?? 0)}`];
+  const month = await spentThisMonthUsd(deps.db);
+  const monthly = Number((await setting(deps.db, "monthly_budget_usd")) ?? 0);
+  const lines = [`💰 Aujourd'hui : ${usd(today)} / ${usd(budget[0]?.v ?? 0)}`, `📅 Ce mois : ${usd(month)} / ${usd(monthly)}`];
   if (rows.length) lines.push("", "Par projet (total) :", ...rows.map((r) => `• ${r.slug} : ${usd(r.spent)} / ${usd(r.budget_usd)}`));
   if (await isPaused(deps.db)) lines.push("", "⏸️ Usine en pause.");
   return { text: lines.join("\n") };
@@ -66,11 +71,13 @@ export async function cmdCout(deps: CommandDeps): Promise<Reply> {
 
 export async function cmdStop(deps: CommandDeps): Promise<Reply> {
   await setPaused(deps.db, true);
+  await audit(deps.db, { actor: "owner", action: "factory.stop", decision: "done", reason: "arrêt d'urgence" });
   return { text: "⏸️ Arrêt d'urgence activé. Aucun nouvel appel IA ne partira. /reprendre pour relancer." };
 }
 
 export async function cmdReprendre(deps: CommandDeps): Promise<Reply> {
   await setPaused(deps.db, false);
+  await audit(deps.db, { actor: "owner", action: "factory.resume", decision: "done" });
   return { text: "▶️ Usine relancée." };
 }
 

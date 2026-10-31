@@ -17,7 +17,13 @@ export type LlmRequest = {
   acceptTruncated?: boolean;
   /** Budget réservé avant l'appel (obligatoire pour les appels avec recherche, dont le coût n'est pas bornable à l'avance). */
   reserveUsd?: number;
+  /** Mission du mode Entretenir à laquelle rattacher le coût. */
+  missionId?: string | null;
+  /** Obligatoire pour le niveau « exceptional » : ordre explicite du propriétaire. */
+  ownerApproved?: boolean;
 };
+
+export class TierNotAllowed extends Error {}
 
 /** Page réellement lue par l'agent. `text` = contenu brut (null pour un PDF ou un échec de lecture). */
 export type FetchedSource = { url: string; title: string | null; text: string | null };
@@ -58,6 +64,9 @@ export class ClaudeLlm implements Llm {
   ) {}
 
   async call(req: LlmRequest): Promise<LlmResult> {
+    if (req.tier === "exceptional" && req.ownerApproved !== true) {
+      throw new TierNotAllowed("Le modèle exceptionnel n'est utilisable que sur ton ordre explicite.");
+    }
     const model = MODELS[req.tier];
     const promptTokensEstimate = Math.ceil((req.system.length + req.prompt.length) / 3);
     const reserve = req.reserveUsd ?? worstCaseUsd(model, promptTokensEstimate, req.maxTokens);
@@ -129,9 +138,9 @@ export class ClaudeLlm implements Llm {
     error: string | null,
   ) {
     await this.db.query(
-      `insert into agent_runs (project_id, agent, model, prompt_version, input_tokens, output_tokens, web_searches, cost_usd, duration_ms, status, error)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [req.projectId, req.agent, model, req.promptVersion, usage.input_tokens, usage.output_tokens, usage.web_searches, cost, durationMs, status, error],
+      `insert into agent_runs (project_id, agent, model, prompt_version, input_tokens, output_tokens, web_searches, cost_usd, duration_ms, status, error, mission_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [req.projectId, req.agent, model, req.promptVersion, usage.input_tokens, usage.output_tokens, usage.web_searches, cost, durationMs, status, error, req.missionId ?? null],
     );
   }
 }
