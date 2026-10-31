@@ -83,13 +83,13 @@ function fakeGitHub(files: Record<string, string | Buffer>): FetchLike {
 }
 
 /** Faux modèle : renvoie les réponses prévues dans l'ordre et note chaque requête. */
-function fakeApi(answers: string[]) {
+function fakeApi(answers: string[], truncatedFirst = false) {
   const calls: { system: string; prompt: string; model: string }[] = [];
   const api: MessagesApi = {
     create: (async (params: { system: string; model: string; messages: { content: string }[] }) => {
       calls.push({ system: params.system, prompt: params.messages[0]!.content, model: params.model });
       const text = answers[Math.min(calls.length - 1, answers.length - 1)]!;
-      return { content: [{ type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 40_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null } };
+      return { content: [{ type: "text", text }], stop_reason: truncatedFirst && calls.length === 1 ? "max_tokens" : "end_turn", usage: { input_tokens: 40_000, output_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null } };
     }) as unknown as MessagesApi["create"],
   };
   return { api, calls };
@@ -239,6 +239,18 @@ describe("critère de sortie du Sprint 2 : analyse réelle, rapport lié au comm
     expect(rows[0]).toMatchObject({ status: "failed" });
     expect(rows[0].cost_usd).toBeCloseTo(0.2, 6);
     expect(notifier.sent[0]!.text).toContain("interrompue");
+  });
+
+  it("réponse coupée par la longueur : nouvel essai plus concis, puis rapport", async () => {
+    const queue = new RecQueue();
+    const github = new GitHubApp("1", PEM, fakeGitHub(REPO_FILES));
+    await maintain.cmdAnalyser({ db, queue, github }, "demo");
+    const { api, calls } = fakeApi(["```json\n{ \"summary\": \"coupé", GOOD_REPORT], true);
+    const notifier = new NullNotifier();
+    expect(await runAnalysis({ db, llm: new ClaudeLlm(db, api), notifier, github }, queue.missions[0]!)).toBe("succeeded");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.prompt).toContain("trop longue");
+    expect(notifier.files).toHaveLength(1);
   });
 
   it("App GitHub absente : /analyser le dit clairement, sans créer de mission", async () => {
