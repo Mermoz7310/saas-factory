@@ -4,9 +4,10 @@ import type { Db } from "../db/pool.ts";
 import { cancelPending, decide, type Choice } from "../domain/approvals.ts";
 import { createProject, getProject, inTransaction, latestArtifact, listActiveProjects, transition, transitionIn } from "../domain/projects.ts";
 import { STATE_LABEL } from "../domain/states.ts";
+import type { GitHubApp } from "../integrations/github.ts";
 import type { Queue } from "../jobs.ts";
 
-export type CommandDeps = { db: Db; queue: Queue };
+export type CommandDeps = { db: Db; queue: Queue; github?: GitHubApp | null };
 export type Reply = { text: string; file?: { name: string; content: string } };
 
 export const HELP = [
