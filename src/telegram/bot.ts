@@ -90,6 +90,10 @@ export function createBot(token: string, ownerId: number | undefined, deps: cmd.
   bot.command("verifier", async (ctx) => reply(ctx, await maintain.cmdVerifier(deps, ctx.match)));
   bot.command("analyser", async (ctx) => reply(ctx, await maintain.cmdAnalyser(deps, ctx.match)));
   bot.command("rapport", async (ctx) => reply(ctx, await maintain.cmdRapport(deps, ctx.match)));
+  bot.command("fiche", async (ctx) => reply(ctx, await maintain.cmdFiche(deps, ctx.match)));
+  bot.command("problemes", async (ctx) => reply(ctx, await maintain.cmdProblemes(deps, ctx.match)));
+  bot.command("ignorer", async (ctx) => reply(ctx, await maintain.cmdIgnorer(deps, ctx.match)));
+  bot.command("note", async (ctx) => reply(ctx, await maintain.cmdNote(deps, ctx.match)));
   bot.command("journal", async (ctx) => reply(ctx, await maintain.cmdJournal(deps, ctx.match)));
 
   bot.on("callback_query:data", async (ctx) => {

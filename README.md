@@ -9,6 +9,7 @@ Cœur de SaaS Factory AI : base de l'usine, file de travaux, bot Telegram, étap
 - `src/telegram/` : bot réservé au propriétaire
 - `src/maintain/` : mode Entretenir — SaaS connectés (`apps.ts`) et moteur de politiques (`policy.ts`, refus par défaut, sans IA)
 - `src/maintain/analysis.ts` : analyse d'un dépôt en lecture seule (archive du commit, secrets masqués par `secrets.ts`, constats vérifiés par le code, rapport Telegram)
+- `src/maintain/issues.ts` : mémoire de chaque SaaS — problèmes suivis d'une analyse à l'autre (corrigé seulement si la preuve a disparu du code), notes du propriétaire
 - `src/audit.ts` : journal d'audit en ajout seul (aucune modification ni suppression possible, contrôlé par la base)
 - `src/llm/router.ts` : choix du modèle par tâche (Haiku → Sonnet → Opus après 2 échecs ; Fable uniquement sur ton ordre)
 - `deploy/INSTALL.md` : installation sur le VPS

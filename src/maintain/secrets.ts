@@ -18,7 +18,7 @@ const PATTERNS: { name: string; re: RegExp }[] = [
   { name: "mot de passe dans une URL", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]+:(?![$<{%])[^\s@'"/$<{]{6,}@/gi },
   {
     name: "secret affecté en clair",
-    re: /\b[A-Za-z0-9_]*(?:secret|password|passwd|pwd|api[_-]?key|token|private[_-]?key)[A-Za-z0-9_]*\s*[:=]\s*["'](?![$<{%])[^"'\s]{8,}["']/gi,
+    re: /\b[A-Za-z0-9_]*(?:secret|password|passwd|pwd|api[_-]?key|token|private[_-]?key)[A-Za-z0-9_]*\s*[:=]\s*["'](?![$<{%]|env\()[^"'\s]{8,}["']/gi,
   },
 ];
 
@@ -44,6 +44,11 @@ export function maskSecrets(text: string): { text: string; hits: SecretHit[] } {
 /** Tests, exemples et données factices : un secret y est presque toujours un faux, signalé en priorité basse. */
 export function isTestOrExample(path: string): boolean {
   return /(^|\/)(tests?|__tests__|fixtures?|spec|mocks?|examples?)\/|\.(test|spec)\.[a-z]+$|\.(example|sample|template)$/i.test(path);
+}
+
+/** Documentation et configuration de développement local : un secret y est souvent une valeur locale, à vérifier. */
+export function isDocOrLocalConfig(path: string): boolean {
+  return /\.(md|mdx|txt|rst)$/i.test(path) || /(^|\/)supabase\/config\.toml$/.test(path) || /(^|\/)docker-compose[^/]*\.ya?ml$/.test(path) || /(^|\/)scripts\/[^/]*(local|shim|dev|seed)[^/]*$/i.test(path) || /\.local\.[a-z]+$/i.test(path);
 }
 
 /** Fichiers d'environnement réels (pas les modèles .example). */
