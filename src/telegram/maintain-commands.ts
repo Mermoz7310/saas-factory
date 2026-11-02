@@ -1,6 +1,7 @@
 import { recentAudit, type AuditRow } from "../audit.ts";
 import { connectApp, getApp, LEVEL_LABEL, listApps, MAX_AVAILABLE_LEVEL, setAutonomy } from "../maintain/apps.ts";
 import { verifyApp } from "../maintain/github-link.ts";
+import { addNote, dismissIssue, issueCounts, openIssues, recentNotes } from "../maintain/issues.ts";
 import { authorize } from "../maintain/policy.ts";
 import type { CommandDeps, Reply } from "./commands.ts";
 
@@ -13,6 +14,10 @@ export const MAINTAIN_HELP = [
   "/verifier <nom> — vérifier l'accès GitHub en lecture seule et relever le dernier commit",
   "/analyser <nom> — analyser le code (lecture seule, rapport sur Telegram)",
   "/rapport <nom> — renvoyer le dernier rapport d'analyse",
+  "/fiche <nom> — fiche du SaaS : stack, état, problèmes, coûts, notes",
+  "/problemes <nom> — problèmes encore ouverts (avec leur numéro)",
+  "/ignorer <nom> <numéro> <raison> — écarter un problème (faux positif, choix assumé)",
+  "/note <nom> <texte> — donner un contexte ou une décision, relu à chaque analyse",
   "/journal [nom] — dernières décisions du journal d'audit",
 ].join("\n");
 
@@ -104,6 +109,72 @@ export async function cmdRapport(deps: CommandDeps, slug: string): Promise<Reply
   const r = rows[0];
   if (!r) return { text: `Pas encore de rapport pour ${app.slug}. Lance /analyser ${app.slug}` };
   return { text: `📋 Dernier rapport de ${app.slug} (${fmtDate(r.ended_at)})`, file: { name: `analyse-${app.slug}-${r.commit_sha.slice(0, 7)}.md`, content: r.report_md } };
+}
+
+const SEV_ICON: Record<string, string> = { critical: "🔴", high: "🟠", medium: "🟡", low: "⚪" };
+
+export async function cmdFiche(deps: CommandDeps, slug: string): Promise<Reply> {
+  const app = slug.trim() ? await getApp(deps.db, slug) : null;
+  if (!app) return { text: "Usage : /fiche <nom>\nTape /apps pour voir les noms." };
+  const { rows: last } = await deps.db.query<{ commit_sha: string; ended_at: Date; report: { summary?: string; stack?: string[] } | null }>(
+    "select commit_sha, ended_at, report from missions where app_id = $1 and status = 'succeeded' order by ended_at desc limit 1",
+    [app.id],
+  );
+  const { rows: stats } = await deps.db.query<{ n: number; cost: number }>(
+    "select count(*)::int as n, coalesce(sum(cost_usd), 0) as cost from missions where app_id = $1 and kind = 'analysis'",
+    [app.id],
+  );
+  const c = await issueCounts(deps.db, app.id);
+  const notes = await recentNotes(deps.db, app.id, 5);
+  const l = last[0];
+  return {
+    text: [
+      `🗂️ ${app.slug} — ${app.repo_full_name}`,
+      `Niveau ${LEVEL_LABEL[app.autonomy_level]}`,
+      l ? `Dernière analyse : ${fmtDate(l.ended_at)} sur ${l.commit_sha.slice(0, 7)}` : "Jamais analysé : /analyser " + app.slug,
+      l?.report?.stack?.length ? `Stack : ${l.report.stack.join(", ")}` : null,
+      `Problèmes ouverts : 🔴 ${c.critical ?? 0} · 🟠 ${c.high ?? 0} · 🟡 ${c.medium ?? 0} · ⚪ ${c.low ?? 0}`,
+      `Corrigés : ${c.fixed ?? 0} · Écartés : ${c.dismissed ?? 0}`,
+      `Analyses : ${stats[0]!.n} · coût total ${stats[0]!.cost.toFixed(2)} $`,
+      l?.report?.summary ? `\n${l.report.summary.slice(0, 900)}` : null,
+      notes.length ? `\n📝 Notes :\n${notes.map((n) => `• ${n}`).join("\n")}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+export async function cmdProblemes(deps: CommandDeps, slug: string): Promise<Reply> {
+  const app = slug.trim() ? await getApp(deps.db, slug) : null;
+  if (!app) return { text: "Usage : /problemes <nom>\nTape /apps pour voir les noms." };
+  const list = await openIssues(deps.db, app.id);
+  if (!list.length) return { text: `Aucun problème ouvert pour ${app.slug}.` };
+  return {
+    text: [
+      `🧩 Problèmes ouverts de ${app.slug} (${list.length})`,
+      ...list.map((i) => `${SEV_ICON[i.severity] ?? "•"} #${i.id} ${i.title.slice(0, 120)}${i.file_path ? `\n   ${i.file_path}` : ""}`),
+      "",
+      `Écarter un faux positif : /ignorer ${app.slug} <numéro> <raison>`,
+    ].join("\n"),
+  };
+}
+
+export async function cmdIgnorer(deps: CommandDeps, args: string): Promise<Reply> {
+  const m = /^\s*(\S+)\s+#?(\d+)\s+([\s\S]{3,300})$/.exec(args);
+  if (!m) return { text: "Usage : /ignorer <nom> <numéro> <raison>\nEx. : /ignorer versa-flotte 12 valeur locale de Supabase, pas un vrai secret" };
+  const app = await getApp(deps.db, m[1]!);
+  if (!app) return { text: "App introuvable. Tape /apps pour voir les noms." };
+  const ok = await dismissIssue(deps.db, app.id, Number(m[2]), m[3]!.trim());
+  return { text: ok ? `✅ Problème #${m[2]} écarté. Il ne sera plus compté comme ouvert.` : `Problème #${m[2]} introuvable ou déjà fermé pour ${app.slug}.` };
+}
+
+export async function cmdNote(deps: CommandDeps, args: string): Promise<Reply> {
+  const m = /^\s*(\S+)\s+([\s\S]{3,1000})$/.exec(args);
+  if (!m) return { text: "Usage : /note <nom> <texte>\nEx. : /note versa-flotte La démo publique est volontairement en lecture seule côté interface." };
+  const app = await getApp(deps.db, m[1]!);
+  if (!app) return { text: "App introuvable. Tape /apps pour voir les noms." };
+  await addNote(deps.db, app.id, m[2]!);
+  return { text: `📝 Note enregistrée pour ${app.slug}. Elle sera relue à chaque analyse.` };
 }
 
 const DECISION_ICON: Record<NonNullable<AuditRow["decision"]>, string> = {
